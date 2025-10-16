@@ -1,0 +1,12 @@
+# Ignorar dependencias de Node
+node_modules/
+**/node_modules/
+
+# Ignorar archivos temporales de Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# Ignorar paquetes de despliegue generados
+*.zip
