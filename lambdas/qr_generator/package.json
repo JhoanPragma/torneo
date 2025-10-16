@@ -1,0 +1,12 @@
+{
+  "name": "qr-generator-service",
+  "version": "1.0.0",
+  "description": "Servicio para generar y almacenar códigos QR en S3.",
+  "main": "src/index.js",
+  "dependencies": {
+    "qrcode": "^1.5.1",
+    "@aws-sdk/client-s3": "^3.577.0",
+    "@aws-sdk/client-dynamodb": "^3.577.0",
+    "uuid": "^9.0.1"
+  }
+}

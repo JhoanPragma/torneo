@@ -1,0 +1,10 @@
+{
+  "name": "torneos-service",
+  "version": "1.0.0",
+  "description": "Servicio de torneos para la plataforma de E-Sport.",
+  "main": "src/index.js",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.577.0",
+    "uuid": "^9.0.1"
+  }
+}

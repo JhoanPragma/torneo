@@ -1,0 +1,10 @@
+{
+  "name": "notificaciones-service",
+  "version": "1.0.0",
+  "description": "Servicio de alertas y notificaciones para torneos.",
+  "main": "src/index.js",
+  "dependencies": {
+    "@aws-sdk/client-sns": "^3.577.0",
+    "@aws-sdk/client-dynamodb": "^3.577.0"
+  }
+}
