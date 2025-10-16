@@ -28,6 +28,21 @@ resource "aws_s3_bucket" "qr_bucket" {
   bucket = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}" 
 }
 
+# Establece un ACL para el bucket S3 (necesario para la creación inicial)
+resource "aws_s3_bucket_acl" "qr_bucket_acl" {
+  bucket = aws_s3_bucket.qr_bucket.id
+  acl    = "private"
+}
+
+# OBJETO PLACEHOLDER: Un archivo ZIP vacío para satisfacer el requisito de código de Lambda
+# Este archivo será sobrescrito por GitHub Actions.
+resource "aws_s3_object" "placeholder_zip" {
+  bucket = aws_s3_bucket.qr_bucket.id
+  key    = "placeholder.zip"
+  source = "/dev/null" # Crea un archivo de cero bytes (vacío)
+  etag   = filemd5("/dev/null")
+}
+
 resource "aws_sns_topic" "notifications_topic" {
   name = "tournament-notifications"
 }
@@ -124,12 +139,16 @@ resource "aws_iam_role_policy" "lambda_policy" {
 }
 
 # --- 3. Funciones Lambda ---
+# Las cuatro funciones usan el objeto placeholder de S3
 resource "aws_lambda_function" "crear_torneo_lambda" {
   function_name = "crear-torneo-lambda"
   role          = aws_iam_role.lambda_role.arn
   handler       = "src/index.handler"
   runtime       = "nodejs18.x"
-  source_code_hash = filebase64sha256("/dev/null")
+  
+  s3_bucket     = aws_s3_bucket.qr_bucket.id             # REFERENCIA AL BUCKET
+  s3_key        = aws_s3_object.placeholder_zip.key      # REFERENCIA AL PLACEHOLDER
+
   environment {
     variables = {
       TABLE_NAME = aws_dynamodb_table.torneos_table.name
@@ -142,7 +161,10 @@ resource "aws_lambda_function" "ventas_lambda" {
   role          = aws_iam_role.lambda_role.arn
   handler       = "src/index.handler"
   runtime       = "nodejs18.x"
-  source_code_hash = filebase64sha256("/dev/null")
+  
+  s3_bucket     = aws_s3_bucket.qr_bucket.id
+  s3_key        = aws_s3_object.placeholder_zip.key
+
   environment {
     variables = {
       TABLE_NAME = aws_dynamodb_table.ventas_table.name
@@ -155,7 +177,10 @@ resource "aws_lambda_function" "qr_generator_lambda" {
   role          = aws_iam_role.lambda_role.arn
   handler       = "src/index.handler"
   runtime       = "nodejs18.x"
-  source_code_hash = filebase64sha256("/dev/null")
+  
+  s3_bucket     = aws_s3_bucket.qr_bucket.id
+  s3_key        = aws_s3_object.placeholder_zip.key
+
   environment {
     variables = {
       BUCKET_NAME = aws_s3_bucket.qr_bucket.id 
@@ -169,7 +194,10 @@ resource "aws_lambda_function" "notificaciones_lambda" {
   role          = aws_iam_role.lambda_role.arn
   handler       = "src/index.handler"
   runtime       = "nodejs18.x"
-  source_code_hash = filebase64sha256("/dev/null")
+  
+  s3_bucket     = aws_s3_bucket.qr_bucket.id
+  s3_key        = aws_s3_object.placeholder_zip.key
+
   environment {
     variables = {
       SNS_TOPIC_ARN          = aws_sns_topic.notifications_topic.arn 
