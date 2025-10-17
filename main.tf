@@ -26,13 +26,16 @@ resource "aws_s3_bucket" "qr_bucket" {
   # Concatenación del prefijo de la variable y el sufijo aleatorio
   bucket = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}" 
   
+  # CRÍTICO: Indica que el bucket usará el nuevo modelo de seguridad (ACLs deshabilitados).
+  object_ownership = "BucketOwnerEnforced"
+  
   force_destroy = true 
   tags = {
     Name = "qr-codes"
   }
 }
 
-# RECURSO CRÍTICO: Bloquea explícitamente el acceso público, resolviendo el error 'empty result'.
+# CRÍTICO: Este recurso establece el bloqueo de acceso público, requerido por defecto en AWS.
 resource "aws_s3_bucket_public_access_block" "qr_bucket_public_access_block" {
   bucket                  = aws_s3_bucket.qr_bucket.id
   block_public_acls       = true
@@ -40,8 +43,6 @@ resource "aws_s3_bucket_public_access_block" "qr_bucket_public_access_block" {
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
-
-# Se omite el recurso aws_s3_bucket_acl.qr_bucket_acl para evitar conflicto de ACLs.
 
 # OBJETO PLACEHOLDER: Un archivo ZIP vacío para satisfacer el requisito de código de Lambda
 resource "aws_s3_object" "placeholder_zip" {
