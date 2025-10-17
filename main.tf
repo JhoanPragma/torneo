@@ -14,9 +14,16 @@ terraform {
       version = "~> 3.0"
     }
   }
+
+  # Puedes usar backend remoto más adelante con este bloque (comentado por ahora)
+  # backend "s3" {
+  #   bucket = "torneos-dev-tfstate-xxxx"
+  #   key    = "terraform.tfstate"
+  #   region = "us-east-1"
+  # }
 }
 
-# --- Configuración del Proveedor ---
+# --- Configuración del proveedor AWS ---
 provider "aws" {
   region = var.aws_region
 }
@@ -24,45 +31,56 @@ provider "aws" {
 ##########################################################
 # 🪣 0. Bucket Backend Automático para Estado de Terraform
 ##########################################################
+
+# Sufijo aleatorio único para evitar conflictos globales
+resource "random_id" "state_suffix" {
+  byte_length = 4
+}
+
+# Bucket para guardar el estado remoto (tfstate)
 resource "aws_s3_bucket" "terraform_state_bucket" {
-  bucket = "${var.project_name}-terraform-state-${random_id.state_suffix.hex}"
+  bucket = "${var.project_name}-${var.environment}-tfstate-${random_id.state_suffix.hex}"
+
   force_destroy = true
+
   tags = {
-    Name        = "terraform-state"
+    Name        = "${var.project_name}-${var.environment}-tfstate"
     Environment = var.environment
   }
 }
 
 resource "aws_s3_bucket_versioning" "terraform_state_versioning" {
   bucket = aws_s3_bucket.terraform_state_bucket.id
+
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-resource "aws_s3_bucket_public_access_block" "terraform_state_block" {
-  bucket                  = aws_s3_bucket.terraform_state_bucket.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
+resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state_encryption" {
+  bucket = aws_s3_bucket.terraform_state_bucket.bucket
 
-# --- Generador de Sufijos Únicos ---
-resource "random_id" "state_suffix" {
-  byte_length = 4
-}
-
-resource "random_id" "bucket_suffix" {
-  byte_length = 4
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
 }
 
 ##########################################################
 # ☁️ 1. Recursos de Integración (S3 y SNS)
 ##########################################################
+
+# Sufijo para bucket QR
+resource "random_id" "bucket_suffix" {
+  byte_length = 4
+}
+
+# Bucket S3 donde se almacenarán los códigos QR
 resource "aws_s3_bucket" "qr_bucket" {
-  bucket = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}" 
-  force_destroy = true 
+  bucket        = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}"
+  force_destroy = true
+
   tags = {
     Name        = "qr-codes"
     Environment = var.environment
@@ -71,6 +89,7 @@ resource "aws_s3_bucket" "qr_bucket" {
 
 resource "aws_s3_bucket_ownership_controls" "qr_bucket_ownership_controls" {
   bucket = aws_s3_bucket.qr_bucket.id
+
   rule {
     object_ownership = "BucketOwnerEnforced"
   }
@@ -85,14 +104,16 @@ resource "aws_s3_bucket_public_access_block" "qr_bucket_public_access_block" {
   depends_on              = [aws_s3_bucket_ownership_controls.qr_bucket_ownership_controls]
 }
 
+# Placeholder para Lambda (se reemplazará por el código real)
 resource "aws_s3_object" "placeholder_zip" {
-  bucket = aws_s3_bucket.qr_bucket.id
-  key    = "placeholder.zip"
-  source = "/dev/null"
-  etag   = filemd5("/dev/null")
+  bucket     = aws_s3_bucket.qr_bucket.id
+  key        = "placeholder.zip"
+  source     = "/dev/null"
+  etag       = filemd5("/dev/null")
   depends_on = [aws_s3_bucket_public_access_block.qr_bucket_public_access_block]
 }
 
+# SNS para notificaciones de torneos
 resource "aws_sns_topic" "notifications_topic" {
   name = "tournament-notifications"
 }
@@ -101,35 +122,41 @@ resource "aws_sns_topic" "notifications_topic" {
 # 🔢 2. Tablas DynamoDB
 ##########################################################
 resource "aws_dynamodb_table" "torneos_table" {
-  name           = "Torneos"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "id"
+  name         = "Torneos"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
   attribute {
     name = "id"
     type = "S"
   }
+
   tags = { Environment = var.environment }
 }
 
 resource "aws_dynamodb_table" "ventas_table" {
-  name           = "Ventas"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "id"
+  name         = "Ventas"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
   attribute {
     name = "id"
     type = "S"
   }
+
   tags = { Environment = var.environment }
 }
 
 resource "aws_dynamodb_table" "transmisiones_table" {
-  name           = "Transmisiones"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "id"
+  name         = "Transmisiones"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
   attribute {
     name = "id"
     type = "S"
   }
+
   tags = { Environment = var.environment }
 }
 
@@ -138,6 +165,7 @@ resource "aws_dynamodb_table" "transmisiones_table" {
 ##########################################################
 resource "aws_iam_role" "lambda_role" {
   name = "torneo_plataform_lambda_role"
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -151,8 +179,9 @@ resource "aws_iam_role" "lambda_role" {
 }
 
 resource "aws_iam_role_policy" "lambda_policy" {
-  name = "lambda_dynamodb_s3_sns_policy" 
+  name = "lambda_dynamodb_s3_sns_policy"
   role = aws_iam_role.lambda_role.id
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -187,13 +216,13 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "s3:GetObject"
         ]
         Effect = "Allow"
-        Resource = "${aws_s3_bucket.qr_bucket.arn}/*" 
+        Resource = "${aws_s3_bucket.qr_bucket.arn}/*"
       },
       {
         Sid = "SNSPublish"
         Action = "sns:Publish"
         Effect = "Allow"
-        Resource = aws_sns_topic.notifications_topic.arn 
+        Resource = aws_sns_topic.notifications_topic.arn
       }
     ]
   })
@@ -254,7 +283,7 @@ resource "aws_lambda_function" "qr_generator_lambda" {
 
   environment {
     variables = {
-      BUCKET_NAME = aws_s3_bucket.qr_bucket.id 
+      BUCKET_NAME = aws_s3_bucket.qr_bucket.id
       TABLE_NAME  = aws_dynamodb_table.ventas_table.name
       ENV         = var.environment
     }
@@ -271,7 +300,7 @@ resource "aws_lambda_function" "notificaciones_lambda" {
 
   environment {
     variables = {
-      SNS_TOPIC_ARN          = aws_sns_topic.notifications_topic.arn 
+      SNS_TOPIC_ARN          = aws_sns_topic.notifications_topic.arn
       TRANSMISSION_TABLE_NAME = aws_dynamodb_table.transmisiones_table.name
       ENV                    = var.environment
     }
@@ -286,6 +315,7 @@ resource "aws_apigatewayv2_api" "torneos_api" {
   protocol_type = "HTTP"
 }
 
+# Rutas e integraciones
 resource "aws_apigatewayv2_integration" "torneos_integration" {
   api_id             = aws_apigatewayv2_api.torneos_api.id
   integration_type   = "AWS_PROXY"
