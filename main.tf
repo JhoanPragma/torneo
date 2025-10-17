@@ -26,7 +26,9 @@ resource "aws_s3_bucket" "qr_bucket" {
   # Concatenación del prefijo de la variable y el sufijo aleatorio
   bucket = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}" 
   
-  # FIX CRÍTICO: Removido el argumento 'acl' y movida la lógica a un nuevo recurso.
+  # FIX CRÍTICO: Se elimina el argumento 'object_ownership' ya que no es soportado en esta ubicación
+  # Su lógica se maneja completamente en el recurso 'aws_s3_bucket_ownership_controls'
+  
   force_destroy = true 
   tags = {
     Name = "qr-codes"
@@ -41,7 +43,7 @@ resource "aws_s3_bucket_ownership_controls" "qr_bucket_ownership_controls" {
   }
 }
 
-# Bloquea explícitamente el acceso público, resolviendo el error 'empty result'.
+# Recurso de Bloqueo de Acceso Público (Debe existir para cumplir con la política de cuenta)
 resource "aws_s3_bucket_public_access_block" "qr_bucket_public_access_block" {
   bucket                  = aws_s3_bucket.qr_bucket.id
   block_public_acls       = true
@@ -57,7 +59,6 @@ resource "aws_s3_object" "placeholder_zip" {
   key    = "placeholder.zip"
   source = "/dev/null"
   etag   = filemd5("/dev/null")
-  # Debe depender del bloqueo de acceso público para evitar errores de permisos
   depends_on = [aws_s3_bucket_public_access_block.qr_bucket_public_access_block]
 }
 
