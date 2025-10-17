@@ -1,6 +1,5 @@
 ##########################################################
-# main.tf — Infraestructura Serverless Torneos AWS
-# CI/CD con GitHub Actions + Terraform (sin pasos manuales)
+# main.tf — Infraestructura completa para torneos (AWS)
 ##########################################################
 
 terraform {
@@ -9,51 +8,68 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.0"
-    }
   }
 
-  # Puedes habilitar backend remoto más adelante con este bloque (cuando ya exista el bucket)
-  # backend "s3" {
-  #   bucket = "torneos-tfstate"
-  #   key    = "terraform.tfstate"
-  #   region = "us-east-1"
-  # }
+  required_version = ">= 1.5.0"
+
+  backend "s3" {
+    bucket         = "torneos-tfstate"                       # debe coincidir con variable.default
+    key            = "infrastructure/terraform.tfstate"      # igual que terraform_state_key
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "terraform-locks"
+  }
 }
 
+##########################################################
+# Provider
+##########################################################
 provider "aws" {
-  region = var.aws_region
+  region  = var.aws_region
+  profile = var.aws_profile
 }
 
 ##########################################################
-# 🪣 0. Buckets Automáticos (Terraform State + QR)
+# DynamoDB Table — Control de locking del estado remoto
 ##########################################################
+resource "aws_dynamodb_table" "terraform_locks" {
+  name         = "terraform-locks"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "LockID"
 
-# --- Bucket para estado remoto (tfstate) ---
-resource "random_id" "state_suffix" {
-  byte_length = 4
-}
-
-resource "aws_s3_bucket" "terraform_state_bucket" {
-  bucket        = "${var.project_name}-${var.environment}-tfstate-${random_id.state_suffix.hex}"
-  force_destroy = true
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
 
   tags = {
-    Name        = "${var.project_name}-${var.environment}-tfstate"
+    Name        = "${var.project_name}-locks"
     Environment = var.environment
   }
 }
 
-resource "aws_s3_bucket_ownership_controls" "tf_state" {
-  bucket = aws_s3_bucket.terraform_state_bucket.id
-  rule {
-    object_ownership = "BucketOwnerPreferred"
+##########################################################
+# Bucket S3 para el estado remoto (si no existe)
+##########################################################
+resource "aws_s3_bucket" "terraform_state_bucket" {
+  bucket = var.terraform_state_bucket_name
+
+  tags = {
+    Name        = "${var.project_name}-tfstate"
+    Environment = var.environment
   }
 }
 
-resource "aws_s3_bucket_public_access_block" "tf_state" {
+# Habilitar versionado en el bucket de estado
+resource "aws_s3_bucket_versioning" "state_bucket_versioning" {
+  bucket = aws_s3_bucket.terraform_state_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Política para proteger el bucket del estado
+resource "aws_s3_bucket_public_access_block" "state_bucket_block" {
   bucket                  = aws_s3_bucket.terraform_state_bucket.id
   block_public_acls       = true
   block_public_policy     = true
@@ -61,30 +77,11 @@ resource "aws_s3_bucket_public_access_block" "tf_state" {
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_versioning" "tf_state" {
-  bucket = aws_s3_bucket.terraform_state_bucket.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "tf_state_encryption" {
-  bucket = aws_s3_bucket.terraform_state_bucket.bucket
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-# --- Bucket para QR Codes ---
-resource "random_id" "qr_suffix" {
-  byte_length = 4
-}
-
+##########################################################
+# Bucket S3 — Para almacenamiento de códigos QR
+##########################################################
 resource "aws_s3_bucket" "qr_bucket" {
-  bucket        = "${var.s3_bucket_name_prefix}-${var.environment}-${random_id.qr_suffix.hex}"
-  force_destroy = true
+  bucket = "${var.s3_bucket_name_prefix}-${var.environment}"
 
   tags = {
     Name        = "${var.project_name}-qr-bucket"
@@ -92,14 +89,7 @@ resource "aws_s3_bucket" "qr_bucket" {
   }
 }
 
-resource "aws_s3_bucket_ownership_controls" "qr_bucket" {
-  bucket = aws_s3_bucket.qr_bucket.id
-  rule {
-    object_ownership = "BucketOwnerPreferred"
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "qr_bucket" {
+resource "aws_s3_bucket_public_access_block" "qr_bucket_block" {
   bucket                  = aws_s3_bucket.qr_bucket.id
   block_public_acls       = true
   block_public_policy     = true
@@ -107,277 +97,119 @@ resource "aws_s3_bucket_public_access_block" "qr_bucket" {
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_versioning" "qr_bucket" {
-  bucket = aws_s3_bucket.qr_bucket.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-# ✅ Placeholder ZIP (necesario para Lambda, debe existir localmente)
-# Crea un archivo vacío llamado "placeholder.zip" en la raíz del proyecto
-resource "aws_s3_object" "placeholder_zip" {
-  bucket     = aws_s3_bucket.qr_bucket.id
-  key        = "placeholder.zip"
-  source     = "placeholder.zip"
-  etag       = filemd5("placeholder.zip")
-  depends_on = [aws_s3_bucket_public_access_block.qr_bucket]
-}
-
 ##########################################################
-# ☁️ 1. SNS y DynamoDB
+# DynamoDB Table — Para guardar ventas
 ##########################################################
-
-resource "aws_sns_topic" "notifications_topic" {
-  name = "tournament-notifications"
-}
-
-# Tablas DynamoDB
-resource "aws_dynamodb_table" "torneos_table" {
-  name         = "Torneos"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "id"
-
-  attribute { name = "id" type = "S" }
-
-  tags = { Environment = var.environment }
-}
-
 resource "aws_dynamodb_table" "ventas_table" {
   name         = "Ventas"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "id"
+  hash_key     = "venta_id"
 
-  attribute { name = "id" type = "S" }
+  attribute {
+    name = "venta_id"
+    type = "S"
+  }
 
-  tags = { Environment = var.environment }
-}
-
-resource "aws_dynamodb_table" "transmisiones_table" {
-  name         = "Transmisiones"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "id"
-
-  attribute { name = "id" type = "S" }
-
-  tags = { Environment = var.environment }
+  tags = {
+    Name        = "${var.project_name}-ventas"
+    Environment = var.environment
+  }
 }
 
 ##########################################################
-# 🔐 2. IAM Roles & Policies
+# IAM Role y Policy para Lambda
 ##########################################################
-resource "aws_iam_role" "lambda_role" {
-  name = "torneo_plataform_lambda_role"
+resource "aws_iam_role" "lambda_exec_role" {
+  name = "${var.project_name}-lambda-exec-role-${var.environment}"
 
   assume_role_policy = jsonencode({
-    Version = "2012-10-17",
+    Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole",
-      Effect = "Allow",
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
     }]
   })
 }
 
 resource "aws_iam_role_policy" "lambda_policy" {
-  name = "lambda_dynamodb_s3_sns_policy"
-  role = aws_iam_role.lambda_role.id
+  name = "${var.project_name}-lambda-policy-${var.environment}"
+  role = aws_iam_role.lambda_exec_role.id
 
   policy = jsonencode({
-    Version = "2012-10-17",
+    Version = "2012-10-17"
     Statement = [
+      # Permisos de CloudWatch Logs
       {
-        Sid = "CloudWatchLogging",
+        Effect = "Allow"
         Action = [
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
-          "logs:PutLogEvents",
-        ],
-        Effect = "Allow",
+          "logs:PutLogEvents"
+        ]
         Resource = "arn:aws:logs:*:*:*"
       },
+      # Permisos para DynamoDB y S3
       {
-        Sid = "DynamoDBAccess",
+        Effect = "Allow"
         Action = [
           "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:GetItem"
-        ],
-        Effect = "Allow",
-        Resource = [
-          aws_dynamodb_table.torneos_table.arn,
-          aws_dynamodb_table.ventas_table.arn,
-          aws_dynamodb_table.transmisiones_table.arn
-        ]
-      },
-      {
-        Sid = "S3Access",
-        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Scan",
+          "s3:GetObject",
           "s3:PutObject",
-          "s3:GetObject"
-        ],
-        Effect = "Allow",
-        Resource = "${aws_s3_bucket.qr_bucket.arn}/*"
-      },
-      {
-        Sid = "SNSPublish",
-        Action = "sns:Publish",
-        Effect = "Allow",
-        Resource = aws_sns_topic.notifications_topic.arn
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_dynamodb_table.ventas_table.arn,
+          "${aws_s3_bucket.qr_bucket.arn}/*",
+          aws_s3_bucket.qr_bucket.arn
+        ]
       }
     ]
   })
 }
 
 ##########################################################
-# ⚙️ 3. Lambdas
+# Lambda Function — QR Processor
 ##########################################################
-locals {
-  common_lambda_settings = {
-    role      = aws_iam_role.lambda_role.arn
-    handler   = "src/index.handler"
-    runtime   = "nodejs18.x"
-    s3_bucket = aws_s3_bucket.qr_bucket.id
-    s3_key    = aws_s3_object.placeholder_zip.key
-  }
-}
+resource "aws_lambda_function" "qr_lambda" {
+  function_name = "${var.project_name}-qr-lambda-${var.environment}"
+  handler       = "index.handler"
+  runtime       = "nodejs18.x"
+  role          = aws_iam_role.lambda_exec_role.arn
+  filename      = "${path.module}/lambda_placeholder.zip"
 
-resource "aws_lambda_function" "crear_torneo_lambda" {
-  function_name = "crear-torneo-lambda"
-  role          = local.common_lambda_settings.role
-  handler       = local.common_lambda_settings.handler
-  runtime       = local.common_lambda_settings.runtime
-  s3_bucket     = local.common_lambda_settings.s3_bucket
-  s3_key        = local.common_lambda_settings.s3_key
+  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
 
   environment {
     variables = {
-      TABLE_NAME = aws_dynamodb_table.torneos_table.name
-      ENV        = var.environment
-    }
-  }
-}
-
-resource "aws_lambda_function" "ventas_lambda" {
-  function_name = "ventas-lambda"
-  role          = local.common_lambda_settings.role
-  handler       = local.common_lambda_settings.handler
-  runtime       = local.common_lambda_settings.runtime
-  s3_bucket     = local.common_lambda_settings.s3_bucket
-  s3_key        = local.common_lambda_settings.s3_key
-
-  environment {
-    variables = {
-      TABLE_NAME = aws_dynamodb_table.ventas_table.name
-      ENV        = var.environment
-    }
-  }
-}
-
-resource "aws_lambda_function" "qr_generator_lambda" {
-  function_name = "qr-generator-lambda"
-  role          = local.common_lambda_settings.role
-  handler       = local.common_lambda_settings.handler
-  runtime       = local.common_lambda_settings.runtime
-  s3_bucket     = local.common_lambda_settings.s3_bucket
-  s3_key        = local.common_lambda_settings.s3_key
-
-  environment {
-    variables = {
-      BUCKET_NAME = aws_s3_bucket.qr_bucket.id
+      ENVIRONMENT = var.environment
+      BUCKET_NAME = aws_s3_bucket.qr_bucket.bucket
       TABLE_NAME  = aws_dynamodb_table.ventas_table.name
-      ENV         = var.environment
     }
   }
-}
 
-resource "aws_lambda_function" "notificaciones_lambda" {
-  function_name = "notificaciones-lambda"
-  role          = local.common_lambda_settings.role
-  handler       = local.common_lambda_settings.handler
-  runtime       = local.common_lambda_settings.runtime
-  s3_bucket     = local.common_lambda_settings.s3_bucket
-  s3_key        = local.common_lambda_settings.s3_key
-
-  environment {
-    variables = {
-      SNS_TOPIC_ARN           = aws_sns_topic.notifications_topic.arn
-      TRANSMISSION_TABLE_NAME = aws_dynamodb_table.transmisiones_table.name
-      ENV                     = var.environment
-    }
+  tags = {
+    Name        = "${var.project_name}-lambda"
+    Environment = var.environment
   }
 }
 
 ##########################################################
-# 🌐 4. API Gateway HTTP
+# Outputs
 ##########################################################
-resource "aws_apigatewayv2_api" "torneos_api" {
-  name          = "TorneosAPI"
-  protocol_type = "HTTP"
+output "qr_bucket_name" {
+  description = "Nombre del bucket donde se guardan los códigos QR"
+  value       = aws_s3_bucket.qr_bucket.bucket
 }
 
-resource "aws_apigatewayv2_integration" "torneos_integration" {
-  api_id             = aws_apigatewayv2_api.torneos_api.id
-  integration_type   = "AWS_PROXY"
-  integration_uri    = aws_lambda_function.crear_torneo_lambda.arn
-  integration_method = "POST"
+output "lambda_name" {
+  description = "Nombre de la función Lambda desplegada"
+  value       = aws_lambda_function.qr_lambda.function_name
 }
 
-resource "aws_apigatewayv2_route" "torneos_route" {
-  api_id    = aws_apigatewayv2_api.torneos_api.id
-  route_key = "POST /torneos"
-  target    = "integrations/${aws_apigatewayv2_integration.torneos_integration.id}"
-}
-
-resource "aws_apigatewayv2_integration" "ventas_integration" {
-  api_id             = aws_apigatewayv2_api.torneos_api.id
-  integration_type   = "AWS_PROXY"
-  integration_uri    = aws_lambda_function.ventas_lambda.arn
-  integration_method = "POST"
-}
-
-resource "aws_apigatewayv2_route" "ventas_route" {
-  api_id    = aws_apigatewayv2_api.torneos_api.id
-  route_key = "POST /ventas"
-  target    = "integrations/${aws_apigatewayv2_integration.ventas_integration.id}"
-}
-
-resource "aws_apigatewayv2_integration" "notificaciones_integration" {
-  api_id             = aws_apigatewayv2_api.torneos_api.id
-  integration_type   = "AWS_PROXY"
-  integration_uri    = aws_lambda_function.notificaciones_lambda.arn
-  integration_method = "POST"
-}
-
-resource "aws_apigatewayv2_route" "notificaciones_route" {
-  api_id    = aws_apigatewayv2_api.torneos_api.id
-  route_key = "POST /notificaciones"
-  target    = "integrations/${aws_apigatewayv2_integration.notificaciones_integration.id}"
-}
-
-##########################################################
-# 🔓 5. Permisos API → Lambda
-##########################################################
-resource "aws_lambda_permission" "torneos_permission" {
-  statement_id  = "AllowAPIGatewayInvokeTorneos"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.crear_torneo_lambda.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.torneos_api.execution_arn}/*/*"
-}
-
-resource "aws_lambda_permission" "ventas_permission" {
-  statement_id  = "AllowAPIGatewayInvokeVentas"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.ventas_lambda.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.torneos_api.execution_arn}/*/*"
-}
-
-resource "aws_lambda_permission" "notificaciones_permission" {
-  statement_id  = "AllowAPIGatewayInvokeNotificaciones"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.notificaciones_lambda.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.torneos_api.execution_arn}/*/*"
+output "dynamodb_table_name" {
+  description = "Nombre de la tabla DynamoDB creada"
+  value       = aws_dynamodb_table.ventas_table.name
 }
