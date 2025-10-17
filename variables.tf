@@ -2,46 +2,30 @@
 # variables.tf — Variables globales para infraestructura
 ##########################################################
 
-# --- Región AWS ---
+# Región AWS
 variable "aws_region" {
-  description = "Región AWS donde se desplegará la infraestructura"
+  description = "Región donde se desplegarán los recursos de AWS"
   type        = string
   default     = "us-east-1"
 }
 
-# --- Prefijo de nombre del bucket QR ---
-variable "s3_bucket_name_prefix" {
-  description = "Prefijo base para el bucket donde se guardarán los QR y otros recursos"
-  type        = string
-  default     = "torneos-qr"
-}
-
-# --- Entorno de despliegue ---
+# Entorno (ej: dev, staging, prod)
 variable "environment" {
-  description = "Nombre del entorno (ej: dev, staging, prod)"
+  description = "Nombre del entorno"
   type        = string
   default     = "dev"
 }
 
-# --- Variables auxiliares opcionales ---
-variable "lambda_runtime" {
-  description = "Runtime utilizado por las funciones Lambda"
+# Nombre base del proyecto (usado para el bucket de estado)
+variable "project_name" {
+  description = "Nombre del proyecto usado como prefijo en recursos"
   type        = string
-  default     = "nodejs18.x"
+  default     = "torneos"
 }
 
-variable "lambda_handler" {
-  description = "Handler principal de las funciones Lambda"
+# Prefijo del bucket S3 para los QR codes
+variable "s3_bucket_name_prefix" {
+  description = "Prefijo para el bucket donde se guardarán los códigos QR"
   type        = string
-  default     = "src/index.handler"
-}
-
-variable "tags" {
-  description = "Tags comunes aplicados a todos los recursos"
-  type        = map(string)
-  default = {
-    Project     = "TorneosServerless"
-    Owner       = "GitHubActions"
-    ManagedBy   = "Terraform"
-  }
+  default     = "torneos-qr-codes"
 }
