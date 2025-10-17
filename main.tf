@@ -26,8 +26,8 @@ resource "aws_s3_bucket" "qr_bucket" {
   # Concatenación del prefijo de la variable y el sufijo aleatorio
   bucket = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}" 
   
-  # CRÍTICO: Indica que el bucket usará el nuevo modelo de seguridad (ACLs deshabilitados).
-  object_ownership = "BucketOwnerEnforced"
+  # FIX: Usamos 'acl = "private"' para crear el bucket de forma privada.
+  acl = "private" 
   
   force_destroy = true 
   tags = {
@@ -35,7 +35,7 @@ resource "aws_s3_bucket" "qr_bucket" {
   }
 }
 
-# CRÍTICO: Este recurso establece el bloqueo de acceso público, requerido por defecto en AWS.
+# CRÍTICO: Bloquea explícitamente el acceso público, resolviendo el error 'empty result'.
 resource "aws_s3_bucket_public_access_block" "qr_bucket_public_access_block" {
   bucket                  = aws_s3_bucket.qr_bucket.id
   block_public_acls       = true
