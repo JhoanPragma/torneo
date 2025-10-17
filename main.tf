@@ -26,22 +26,29 @@ resource "aws_s3_bucket" "qr_bucket" {
   # Concatenación del prefijo de la variable y el sufijo aleatorio
   bucket = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}" 
   
-  # FIX: Usamos 'acl = "private"' para crear el bucket de forma privada.
-  acl = "private" 
-  
+  # FIX CRÍTICO: Removido el argumento 'acl' y movida la lógica a un nuevo recurso.
   force_destroy = true 
   tags = {
     Name = "qr-codes"
   }
 }
 
-# CRÍTICO: Bloquea explícitamente el acceso público, resolviendo el error 'empty result'.
+# RECURSO CRÍTICO: Define la propiedad de objetos para deshabilitar ACLs.
+resource "aws_s3_bucket_ownership_controls" "qr_bucket_ownership_controls" {
+  bucket = aws_s3_bucket.qr_bucket.id
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+# Bloquea explícitamente el acceso público, resolviendo el error 'empty result'.
 resource "aws_s3_bucket_public_access_block" "qr_bucket_public_access_block" {
   bucket                  = aws_s3_bucket.qr_bucket.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+  depends_on              = [aws_s3_bucket_ownership_controls.qr_bucket_ownership_controls]
 }
 
 # OBJETO PLACEHOLDER: Un archivo ZIP vacío para satisfacer el requisito de código de Lambda
@@ -50,6 +57,8 @@ resource "aws_s3_object" "placeholder_zip" {
   key    = "placeholder.zip"
   source = "/dev/null"
   etag   = filemd5("/dev/null")
+  # Debe depender del bloqueo de acceso público para evitar errores de permisos
+  depends_on = [aws_s3_bucket_public_access_block.qr_bucket_public_access_block]
 }
 
 resource "aws_sns_topic" "notifications_topic" {
