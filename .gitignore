@@ -9,4 +9,4 @@ node_modules/
 .terraform.lock.hcl
 
 # Ignorar paquetes de despliegue generados
-*.zip
+*.zip 
