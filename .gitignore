@@ -8,5 +8,3 @@ node_modules/
 *.tfstate.*
 .terraform.lock.hcl
 
-# Ignorar paquetes de despliegue generados
-*.zip 
