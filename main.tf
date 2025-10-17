@@ -22,11 +22,10 @@ terraform {
 }
 
 ##########################################################
-# Provider
+# Provider (sin profile, para GitHub Actions)
 ##########################################################
 provider "aws" {
-  region  = var.aws_region
-  profile = var.aws_profile
+  region = var.aws_region
 }
 
 ##########################################################
@@ -60,7 +59,6 @@ resource "aws_s3_bucket" "terraform_state_bucket" {
   }
 }
 
-# Habilitar versionado en el bucket de estado
 resource "aws_s3_bucket_versioning" "state_bucket_versioning" {
   bucket = aws_s3_bucket.terraform_state_bucket.id
   versioning_configuration {
@@ -68,7 +66,6 @@ resource "aws_s3_bucket_versioning" "state_bucket_versioning" {
   }
 }
 
-# Política para proteger el bucket del estado
 resource "aws_s3_bucket_public_access_block" "state_bucket_block" {
   bucket                  = aws_s3_bucket.terraform_state_bucket.id
   block_public_acls       = true
@@ -139,7 +136,6 @@ resource "aws_iam_role_policy" "lambda_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      # Permisos de CloudWatch Logs
       {
         Effect = "Allow"
         Action = [
@@ -149,7 +145,6 @@ resource "aws_iam_role_policy" "lambda_policy" {
         ]
         Resource = "arn:aws:logs:*:*:*"
       },
-      # Permisos para DynamoDB y S3
       {
         Effect = "Allow"
         Action = [
