@@ -13,11 +13,10 @@ terraform {
 
 # --- Configuración del Proveedor ---
 provider "aws" {
-  region = var.aws_region # Uso de la variable definida en variables.tf
+  region = var.aws_region
 }
 
 # --- Generador de Sufijo Único ---
-# Este recurso genera un sufijo aleatorio para garantizar la unicidad del Bucket S3.
 resource "random_id" "bucket_suffix" {
   byte_length = 4
 }
@@ -26,20 +25,22 @@ resource "random_id" "bucket_suffix" {
 resource "aws_s3_bucket" "qr_bucket" {
   # Concatenación del prefijo de la variable y el sufijo aleatorio
   bucket = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}" 
+  
+  # FIX CRÍTICO: Aplica la configuración de propiedad del bucket (BOE)
+  # Esto deshabilita ACLs y resuelve el error 'empty result'
+  force_destroy = true 
+  tags = {
+    Name = "qr-codes"
+  }
 }
 
-# Establece un ACL para el bucket S3 (necesario para la creación inicial)
-resource "aws_s3_bucket_acl" "qr_bucket_acl" {
-  bucket = aws_s3_bucket.qr_bucket.id
-  acl    = "private"
-}
+# Se omite el recurso aws_s3_bucket_acl.qr_bucket_acl para evitar conflicto de ACLs.
 
 # OBJETO PLACEHOLDER: Un archivo ZIP vacío para satisfacer el requisito de código de Lambda
-# Este archivo será sobrescrito por GitHub Actions.
 resource "aws_s3_object" "placeholder_zip" {
   bucket = aws_s3_bucket.qr_bucket.id
   key    = "placeholder.zip"
-  source = "/dev/null" # Crea un archivo de cero bytes (vacío)
+  source = "/dev/null"
   etag   = filemd5("/dev/null")
 }
 
@@ -139,15 +140,14 @@ resource "aws_iam_role_policy" "lambda_policy" {
 }
 
 # --- 3. Funciones Lambda ---
-# Las cuatro funciones usan el objeto placeholder de S3
 resource "aws_lambda_function" "crear_torneo_lambda" {
   function_name = "crear-torneo-lambda"
   role          = aws_iam_role.lambda_role.arn
   handler       = "src/index.handler"
   runtime       = "nodejs18.x"
   
-  s3_bucket     = aws_s3_bucket.qr_bucket.id             # REFERENCIA AL BUCKET
-  s3_key        = aws_s3_object.placeholder_zip.key      # REFERENCIA AL PLACEHOLDER
+  s3_bucket     = aws_s3_bucket.qr_bucket.id
+  s3_key        = aws_s3_object.placeholder_zip.key
 
   environment {
     variables = {
