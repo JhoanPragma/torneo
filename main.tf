@@ -26,12 +26,19 @@ resource "aws_s3_bucket" "qr_bucket" {
   # Concatenación del prefijo de la variable y el sufijo aleatorio
   bucket = "${var.s3_bucket_name_prefix}-${random_id.bucket_suffix.hex}" 
   
-  # FIX CRÍTICO: Aplica la configuración de propiedad del bucket (BOE)
-  # Esto deshabilita ACLs y resuelve el error 'empty result'
   force_destroy = true 
   tags = {
     Name = "qr-codes"
   }
+}
+
+# RECURSO CRÍTICO: Bloquea explícitamente el acceso público, resolviendo el error 'empty result'.
+resource "aws_s3_bucket_public_access_block" "qr_bucket_public_access_block" {
+  bucket                  = aws_s3_bucket.qr_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
 # Se omite el recurso aws_s3_bucket_acl.qr_bucket_acl para evitar conflicto de ACLs.
