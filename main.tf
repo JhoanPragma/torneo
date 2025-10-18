@@ -68,7 +68,7 @@ resource "aws_dynamodb_table" "ventas_table" {
 }
 
 ##########################################################
-# IAM Role y Policy para Lambda
+# IAM Role y Policy para Lambdas
 ##########################################################
 resource "aws_iam_role" "lambda_exec_role" {
   name = "${var.project_name}-lambda-exec-role-${var.environment}"
@@ -122,27 +122,91 @@ resource "aws_iam_role_policy" "lambda_policy" {
 }
 
 ##########################################################
-# Lambda Function — QR Processor
+# Lambda Functions — Creación de las 4 funciones
 ##########################################################
-resource "aws_lambda_function" "qr_lambda" {
-  function_name = "${var.project_name}-qr-lambda-${var.environment}"
+
+# 1️⃣ Lambda de creación de torneos
+resource "aws_lambda_function" "crear_torneo_lambda" {
+  function_name = "crear-torneo-lambda"
   handler       = "index.handler"
   runtime       = "nodejs18.x"
   role          = aws_iam_role.lambda_exec_role.arn
   filename      = "${path.module}/lambda_placeholder.zip"
+  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
 
+  environment {
+    variables = {
+      ENVIRONMENT = var.environment
+    }
+  }
+
+  tags = {
+    Name        = "crear-torneo-lambda"
+    Environment = var.environment
+  }
+}
+
+# 2️⃣ Lambda de ventas
+resource "aws_lambda_function" "ventas_lambda" {
+  function_name = "ventas-lambda"
+  handler       = "index.handler"
+  runtime       = "nodejs18.x"
+  role          = aws_iam_role.lambda_exec_role.arn
+  filename      = "${path.module}/lambda_placeholder.zip"
+  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
+
+  environment {
+    variables = {
+      ENVIRONMENT = var.environment
+      TABLE_NAME  = aws_dynamodb_table.ventas_table.name
+    }
+  }
+
+  tags = {
+    Name        = "ventas-lambda"
+    Environment = var.environment
+  }
+}
+
+# 3️⃣ Lambda de generación de QR
+resource "aws_lambda_function" "qr_generator_lambda" {
+  function_name = "qr-generator-lambda"
+  handler       = "index.handler"
+  runtime       = "nodejs18.x"
+  role          = aws_iam_role.lambda_exec_role.arn
+  filename      = "${path.module}/lambda_placeholder.zip"
   source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
 
   environment {
     variables = {
       ENVIRONMENT = var.environment
       BUCKET_NAME = aws_s3_bucket.qr_bucket.bucket
-      TABLE_NAME  = aws_dynamodb_table.ventas_table.name
     }
   }
 
   tags = {
-    Name        = "${var.project_name}-lambda"
+    Name        = "qr-generator-lambda"
+    Environment = var.environment
+  }
+}
+
+# 4️⃣ Lambda de notificaciones
+resource "aws_lambda_function" "notificaciones_lambda" {
+  function_name = "notificaciones-lambda"
+  handler       = "index.handler"
+  runtime       = "nodejs18.x"
+  role          = aws_iam_role.lambda_exec_role.arn
+  filename      = "${path.module}/lambda_placeholder.zip"
+  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
+
+  environment {
+    variables = {
+      ENVIRONMENT = var.environment
+    }
+  }
+
+  tags = {
+    Name        = "notificaciones-lambda"
     Environment = var.environment
   }
 }
@@ -155,12 +219,17 @@ output "qr_bucket_name" {
   value       = aws_s3_bucket.qr_bucket.bucket
 }
 
-output "lambda_name" {
-  description = "Nombre de la función Lambda desplegada"
-  value       = aws_lambda_function.qr_lambda.function_name
-}
-
 output "dynamodb_table_name" {
   description = "Nombre de la tabla DynamoDB creada"
   value       = aws_dynamodb_table.ventas_table.name
+}
+
+output "lambda_names" {
+  description = "Funciones Lambda creadas"
+  value = [
+    aws_lambda_function.crear_torneo_lambda.function_name,
+    aws_lambda_function.ventas_lambda.function_name,
+    aws_lambda_function.qr_generator_lambda.function_name,
+    aws_lambda_function.notificaciones_lambda.function_name
+  ]
 }
