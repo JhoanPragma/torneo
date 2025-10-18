@@ -27,6 +27,13 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # ✅ Crear placeholder ZIP para Terraform
+      - name: Create Lambda Placeholder
+        run: |
+          echo "placeholder for lambda" > placeholder.txt
+          zip lambda_placeholder.zip placeholder.txt
+          rm placeholder.txt
+
       - name: Terraform Init
         run: terraform init
 
@@ -34,6 +41,13 @@ jobs:
         env:
           TF_LOG: INFO
         run: terraform apply -auto-approve -var="aws_region=${{ env.AWS_REGION }}"
+
+      # ✅ Guarda el ZIP generado como artefacto para el siguiente job
+      - name: Upload Lambda Placeholder
+        uses: actions/upload-artifact@v3
+        with:
+          name: lambda_placeholder
+          path: lambda_placeholder.zip
 
   lambda_deploy:
     needs: terraform_deploy
@@ -53,6 +67,11 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
+
+      - name: Download Placeholder
+        uses: actions/download-artifact@v3
+        with:
+          name: lambda_placeholder
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v3
