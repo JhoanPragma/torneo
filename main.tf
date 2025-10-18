@@ -13,23 +13,57 @@ terraform {
   required_version = ">= 1.5.0"
 
   backend "s3" {
-    bucket         = "torneos-tfstate"                       # debe coincidir con variable.default
-    key            = "infrastructure/terraform.tfstate"      # igual que terraform_state_key
+    bucket         = "torneos-tfstate"                  # Debe existir
+    key            = "infrastructure/terraform.tfstate"
     region         = "us-east-1"
     encrypt        = true
-    dynamodb_table = "terraform-locks"
+    dynamodb_table = "terraform-locks"                  # Debe existir
   }
 }
 
 ##########################################################
-# Provider (sin profile, para GitHub Actions)
+# Provider
 ##########################################################
 provider "aws" {
   region = var.aws_region
 }
 
 ##########################################################
-# DynamoDB Table — Control de locking del estado remoto
+# Bucket S3 para el estado remoto (solo si no existe)
+##########################################################
+resource "aws_s3_bucket" "terraform_state_bucket" {
+  bucket = var.terraform_state_bucket_name
+
+  tags = {
+    Name        = "${var.project_name}-tfstate"
+    Environment = var.environment
+  }
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [bucket]
+  }
+}
+
+# Habilitar versionado
+resource "aws_s3_bucket_versioning" "state_bucket_versioning" {
+  bucket = aws_s3_bucket.terraform_state_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Bloquear acceso público
+resource "aws_s3_bucket_public_access_block" "state_bucket_block" {
+  bucket                  = aws_s3_bucket.terraform_state_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+##########################################################
+# DynamoDB Table — Lock del estado remoto
 ##########################################################
 resource "aws_dynamodb_table" "terraform_locks" {
   name         = "terraform-locks"
@@ -45,33 +79,11 @@ resource "aws_dynamodb_table" "terraform_locks" {
     Name        = "${var.project_name}-locks"
     Environment = var.environment
   }
-}
 
-##########################################################
-# Bucket S3 para el estado remoto (si no existe)
-##########################################################
-resource "aws_s3_bucket" "terraform_state_bucket" {
-  bucket = var.terraform_state_bucket_name
-
-  tags = {
-    Name        = "${var.project_name}-tfstate"
-    Environment = var.environment
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [name]
   }
-}
-
-resource "aws_s3_bucket_versioning" "state_bucket_versioning" {
-  bucket = aws_s3_bucket.terraform_state_bucket.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "state_bucket_block" {
-  bucket                  = aws_s3_bucket.terraform_state_bucket.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
 }
 
 ##########################################################
@@ -136,6 +148,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # Permisos de CloudWatch Logs
       {
         Effect = "Allow"
         Action = [
@@ -145,6 +158,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
         ]
         Resource = "arn:aws:logs:*:*:*"
       },
+      # Permisos para DynamoDB y S3
       {
         Effect = "Allow"
         Action = [
