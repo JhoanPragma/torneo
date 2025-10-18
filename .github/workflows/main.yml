@@ -7,10 +7,11 @@ on:
 
 env:
   AWS_REGION: us-east-1
+  ENVIRONMENT: dev  # 👈 Puedes cambiar a 'staging' o 'prod' más adelante
 
 jobs:
   ##########################################################
-  # 1️⃣ Job: Despliegue de Infraestructura con Terraform
+  # 1️⃣ Terraform: Despliegue de infraestructura
   ##########################################################
   terraform_deploy:
     runs-on: ubuntu-latest
@@ -38,7 +39,7 @@ jobs:
           TF_LOG: INFO
         run: terraform apply -auto-approve -var="aws_region=${{ env.AWS_REGION }}"
 
-      # ✅ Crea y sube el placeholder ZIP como artefacto para los siguientes jobs
+      # ✅ Placeholder ZIP para las Lambdas
       - name: Create placeholder zip
         run: |
           echo "placeholder for lambda" > placeholder.txt
@@ -52,7 +53,7 @@ jobs:
           path: lambda_placeholder.zip
 
   ##########################################################
-  # 2️⃣ Job: Despliegue de Lambdas después de Terraform
+  # 2️⃣ Lambda Deploy: Actualiza código de cada Lambda
   ##########################################################
   lambda_deploy:
     needs: terraform_deploy
@@ -73,7 +74,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      # ✅ Descarga el artefacto placeholder subido en el job anterior
+      # ✅ Descarga el artefacto del job anterior
       - name: Download Placeholder
         uses: actions/download-artifact@v4
         with:
@@ -91,7 +92,7 @@ jobs:
         with:
           node-version: '18'
 
-      # ✅ Verifica si la carpeta de la Lambda existe, si no usa el placeholder
+      # ✅ Empaqueta código o usa placeholder
       - name: Package Lambda (${{ matrix.service.name }})
         run: |
           if [ -d "${{ matrix.service.path }}" ]; then
@@ -105,9 +106,10 @@ jobs:
             cp lambda_placeholder.zip ${{ matrix.service.name }}.zip
           fi
 
+      # ✅ Actualiza la función Lambda correcta (con sufijo -dev)
       - name: Deploy to AWS Lambda (${{ matrix.service.name }})
         run: |
           echo "🚀 Desplegando ${{ matrix.service.name }}..."
           aws lambda update-function-code \
-            --function-name ${{ matrix.service.name }} \
+            --function-name ${{ matrix.service.name }}-${{ env.ENVIRONMENT }} \
             --zip-file fileb://${{ matrix.service.name }}.zip
