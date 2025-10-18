@@ -68,7 +68,7 @@ resource "aws_dynamodb_table" "ventas_table" {
 }
 
 ##########################################################
-# IAM Role y Policy para Lambdas
+# IAM Role y Policy para Lambda
 ##########################################################
 resource "aws_iam_role" "lambda_exec_role" {
   name = "${var.project_name}-lambda-exec-role-${var.environment}"
@@ -122,55 +122,21 @@ resource "aws_iam_role_policy" "lambda_policy" {
 }
 
 ##########################################################
-# Lambda Functions — Creación de las 4 funciones
+# Lambda Functions
 ##########################################################
-
-# 1️⃣ Lambda de creación de torneos
-resource "aws_lambda_function" "crear_torneo_lambda" {
-  function_name = "crear-torneo-lambda"
-  handler       = "index.handler"
-  runtime       = "nodejs18.x"
-  role          = aws_iam_role.lambda_exec_role.arn
-  filename      = "${path.module}/lambda_placeholder.zip"
-  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
-
-  environment {
-    variables = {
-      ENVIRONMENT = var.environment
-    }
-  }
-
-  tags = {
-    Name        = "crear-torneo-lambda"
-    Environment = var.environment
+locals {
+  lambdas = {
+    torneos        = "crear-torneo-lambda"
+    ventas         = "ventas-lambda"
+    qr_generator   = "qr-generator-lambda"
+    notificaciones = "notificaciones-lambda"
   }
 }
 
-# 2️⃣ Lambda de ventas
-resource "aws_lambda_function" "ventas_lambda" {
-  function_name = "ventas-lambda"
-  handler       = "index.handler"
-  runtime       = "nodejs18.x"
-  role          = aws_iam_role.lambda_exec_role.arn
-  filename      = "${path.module}/lambda_placeholder.zip"
-  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
+resource "aws_lambda_function" "lambda_functions" {
+  for_each = local.lambdas
 
-  environment {
-    variables = {
-      ENVIRONMENT = var.environment
-      TABLE_NAME  = aws_dynamodb_table.ventas_table.name
-    }
-  }
-
-  tags = {
-    Name        = "ventas-lambda"
-    Environment = var.environment
-  }
-}
-
-# 3️⃣ Lambda de generación de QR
-resource "aws_lambda_function" "qr_generator_lambda" {
-  function_name = "qr-generator-lambda"
+  function_name = "${each.value}-${var.environment}"
   handler       = "index.handler"
   runtime       = "nodejs18.x"
   role          = aws_iam_role.lambda_exec_role.arn
@@ -181,39 +147,79 @@ resource "aws_lambda_function" "qr_generator_lambda" {
     variables = {
       ENVIRONMENT = var.environment
       BUCKET_NAME = aws_s3_bucket.qr_bucket.bucket
+      TABLE_NAME  = aws_dynamodb_table.ventas_table.name
     }
   }
 
   tags = {
-    Name        = "qr-generator-lambda"
+    Name        = each.value
     Environment = var.environment
   }
 }
 
-# 4️⃣ Lambda de notificaciones
-resource "aws_lambda_function" "notificaciones_lambda" {
-  function_name = "notificaciones-lambda"
-  handler       = "index.handler"
-  runtime       = "nodejs18.x"
-  role          = aws_iam_role.lambda_exec_role.arn
-  filename      = "${path.module}/lambda_placeholder.zip"
-  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
+##########################################################
+# API Gateway HTTP
+##########################################################
+resource "aws_apigatewayv2_api" "api" {
+  name          = "${var.project_name}-api"
+  protocol_type = "HTTP"
+}
 
-  environment {
-    variables = {
-      ENVIRONMENT = var.environment
-    }
-  }
+# Integraciones con cada Lambda
+resource "aws_apigatewayv2_integration" "lambda_integration" {
+  for_each = aws_lambda_function.lambda_functions
 
-  tags = {
-    Name        = "notificaciones-lambda"
-    Environment = var.environment
-  }
+  api_id                 = aws_apigatewayv2_api.api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = each.value.invoke_arn
+  payload_format_version = "2.0"
+}
+
+# Rutas (una por Lambda)
+resource "aws_apigatewayv2_route" "lambda_route" {
+  for_each = aws_lambda_function.lambda_functions
+
+  api_id    = aws_apigatewayv2_api.api.id
+  route_key = "POST /${each.key}"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda_integration[each.key].id}"
+}
+
+# Permisos para que API Gateway invoque las Lambdas
+resource "aws_lambda_permission" "api_invoke" {
+  for_each = aws_lambda_function.lambda_functions
+
+  statement_id  = "AllowAPIGatewayInvoke-${each.key}"
+  action        = "lambda:InvokeFunction"
+  function_name = each.value.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/*"
+}
+
+# Stage
+resource "aws_apigatewayv2_stage" "default" {
+  api_id      = aws_apigatewayv2_api.api.id
+  name        = "$default"
+  auto_deploy = true
 }
 
 ##########################################################
 # Outputs
 ##########################################################
+output "api_gateway_url" {
+  description = "Endpoint base del API Gateway"
+  value       = aws_apigatewayv2_stage.default.invoke_url
+}
+
+output "lambda_endpoints" {
+  description = "Rutas HTTP disponibles para probar en Postman"
+  value = {
+    torneos        = "${aws_apigatewayv2_stage.default.invoke_url}/torneos"
+    ventas         = "${aws_apigatewayv2_stage.default.invoke_url}/ventas"
+    qr_generator   = "${aws_apigatewayv2_stage.default.invoke_url}/qr_generator"
+    notificaciones = "${aws_apigatewayv2_stage.default.invoke_url}/notificaciones"
+  }
+}
+
 output "qr_bucket_name" {
   description = "Nombre del bucket donde se guardan los códigos QR"
   value       = aws_s3_bucket.qr_bucket.bucket
@@ -222,14 +228,4 @@ output "qr_bucket_name" {
 output "dynamodb_table_name" {
   description = "Nombre de la tabla DynamoDB creada"
   value       = aws_dynamodb_table.ventas_table.name
-}
-
-output "lambda_names" {
-  description = "Funciones Lambda creadas"
-  value = [
-    aws_lambda_function.crear_torneo_lambda.function_name,
-    aws_lambda_function.ventas_lambda.function_name,
-    aws_lambda_function.qr_generator_lambda.function_name,
-    aws_lambda_function.notificaciones_lambda.function_name
-  ]
 }
