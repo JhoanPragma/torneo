@@ -17,8 +17,8 @@ exports.handler = async (event) => {
     console.log("Evento recibido para generar QR:", JSON.stringify(event, null, 2));
 
     try {
-        const { id_transaccion, url_acceso } = event;
-
+        const body = JSON.parse(event.body);
+        const { id_transaccion, url_acceso } = body;
         if (!id_transaccion || !url_acceso) {
             return {
                 statusCode: 400,
