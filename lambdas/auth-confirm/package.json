@@ -1,0 +1,9 @@
+{
+  "name": "auth-service",
+  "version": "1.0.0",
+  "description": "Lambda para la autenticación con Cognito.",
+  "main": "src/index.js",
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.583.0"
+  }
+}

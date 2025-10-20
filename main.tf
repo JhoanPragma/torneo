@@ -73,7 +73,7 @@ resource "aws_dynamodb_table" "torneos_table" {
 resource "aws_dynamodb_table" "ventas_table" {
   name         = "Ventas"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "id" # Corregido de 'venta_id' a 'id' para coincidir con el código
+  hash_key     = "id"
 
   attribute {
     name = "id"
@@ -86,7 +86,7 @@ resource "aws_dynamodb_table" "ventas_table" {
   }
 }
 
-# Tabla para la Lambda 'notificaciones' (para bloqueo de enlaces)
+# Tabla para la Lambda 'notificaciones'
 resource "aws_dynamodb_table" "transmisiones_table" {
   name         = "Transmisiones"
   billing_mode = "PAY_PER_REQUEST"
@@ -176,12 +176,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
       },
       {
         Effect = "Allow",
-        Action = [
-          "dynamodb:PutItem",
-          "dynamodb:GetItem",
-          "dynamodb:UpdateItem", # Necesario para qr_generator y notificaciones
-          "dynamodb:Scan"
-        ],
+        Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"],
         Resource = [
           aws_dynamodb_table.torneos_table.arn,
           aws_dynamodb_table.ventas_table.arn,
@@ -191,15 +186,18 @@ resource "aws_iam_role_policy" "lambda_policy" {
       {
         Effect   = "Allow",
         Action   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
-        Resource = [
-          "${aws_s3_bucket.qr_bucket.arn}/*",
-          aws_s3_bucket.qr_bucket.arn
-        ]
+        Resource = ["${aws_s3_bucket.qr_bucket.arn}/*", aws_s3_bucket.qr_bucket.arn]
       },
       {
         Effect   = "Allow",
-        Action   = "sns:Publish", # Permiso para que notificaciones envíe mensajes
+        Action   = "sns:Publish",
         Resource = aws_sns_topic.notifications_topic.arn
+      },
+      # Permisos para que las Lambdas de Auth hablen con Cognito
+      {
+        Effect = "Allow",
+        Action = ["cognito-idp:SignUp", "cognito-idp:ConfirmSignUp", "cognito-idp:InitiateAuth", "cognito-idp:AdminConfirmSignUp"],
+        Resource = aws_cognito_user_pool.torneos_user_pool.arn
       }
     ]
   })
@@ -209,11 +207,15 @@ resource "aws_iam_role_policy" "lambda_policy" {
 # Lambda Functions (con variables de entorno corregidas)
 ##########################################################
 locals {
+  # Añadimos las nuevas lambdas de autenticación
   lambdas = {
     torneos        = "crear-torneo-lambda"
     ventas         = "ventas-lambda"
     qr_generator   = "qr-generator-lambda"
     notificaciones = "notificaciones-lambda"
+    signup         = "auth-signup-lambda"
+    confirm        = "auth-confirm-lambda"
+    login          = "auth-login-lambda"
   }
 }
 
@@ -234,6 +236,7 @@ resource "aws_lambda_function" "lambda_functions" {
       TABLE_NAME              = each.key == "torneos" ? aws_dynamodb_table.torneos_table.name : aws_dynamodb_table.ventas_table.name
       SNS_TOPIC_ARN           = aws_sns_topic.notifications_topic.arn
       TRANSMISSION_TABLE_NAME = aws_dynamodb_table.transmisiones_table.name
+      COGNITO_CLIENT_ID       = aws_cognito_user_pool_client.app_client.id
     }
   }
 
@@ -272,16 +275,25 @@ resource "aws_apigatewayv2_integration" "lambda_integration" {
   payload_format_version = "2.0"
 }
 
-resource "aws_apigatewayv2_route" "lambda_route" {
-  for_each = aws_lambda_function.lambda_functions
+# Rutas PROTEGIDAS (requieren token)
+resource "aws_apigatewayv2_route" "protected_routes" {
+  for_each = toset(["torneos", "ventas", "qr_generator", "notificaciones"])
 
   api_id    = aws_apigatewayv2_api.api.id
   route_key = "POST /${each.key}"
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration[each.key].id}"
 
-  # Aplicar seguridad a todas las rutas
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
+}
+
+# Rutas PÚBLICAS para autenticación (NO requieren token)
+resource "aws_apigatewayv2_route" "public_routes" {
+  for_each = toset(["signup", "confirm", "login"])
+
+  api_id    = aws_apigatewayv2_api.api.id
+  route_key = "POST /${each.key}"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda_integration[each.key].id}"
 }
 
 resource "aws_lambda_permission" "api_invoke" {
@@ -301,7 +313,7 @@ resource "aws_apigatewayv2_stage" "default" {
 }
 
 ##########################################################
-# Outputs (con nuevos recursos añadidos)
+# Outputs
 ##########################################################
 output "api_gateway_url" {
   description = "Endpoint base del API Gateway"
@@ -310,7 +322,10 @@ output "api_gateway_url" {
 
 output "lambda_endpoints" {
   description = "Rutas HTTP disponibles para probar en Postman"
-  value = { for k, v in aws_apigatewayv2_route.lambda_route : k => "${aws_apigatewayv2_stage.default.invoke_url}/${k}" }
+  value       = merge(
+    { for k, v in aws_apigatewayv2_route.protected_routes : k => "${aws_apigatewayv2_stage.default.invoke_url}/${k}" },
+    { for k, v in aws_apigatewayv2_route.public_routes : k => "${aws_apigatewayv2_stage.default.invoke_url}/${k}" }
+  )
 }
 
 output "qr_bucket_name" {

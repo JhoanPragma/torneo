@@ -69,6 +69,12 @@ jobs:
             path: lambdas/qr-generator
           - name: notificaciones-lambda
             path: lambdas/notificaciones
+          - name: auth-signup-lambda
+            path: lambdas/auth-signup
+          - name: auth-confirm-lambda
+            path: lambdas/auth-confirm
+          - name: auth-login-lambda
+            path: lambdas/auth-login
 
     steps:
       - name: Checkout Code
@@ -98,7 +104,7 @@ jobs:
           if [ -d "${{ matrix.service.path }}" ]; then
             echo "📦 Empaquetando código desde ${{ matrix.service.path }}"
             cd ${{ matrix.service.path }}
-            npm ci --omit=dev || echo "Sin dependencias npm"
+            npm install --omit=dev
             zip -r ../../${{ matrix.service.name }}.zip .
             cd ../../
           else
