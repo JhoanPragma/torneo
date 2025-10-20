@@ -13,7 +13,7 @@ terraform {
   required_version = ">= 1.5.0"
 
   backend "s3" {
-    bucket         = "torneos-tfstate"                  
+    bucket         = "torneos-tfstate"
     key            = "infrastructure/terraform.tfstate"
     region         = "us-east-1"
     encrypt        = true
@@ -49,15 +49,34 @@ resource "aws_s3_bucket_public_access_block" "qr_bucket_block" {
 }
 
 ##########################################################
-# DynamoDB Table — Para guardar ventas
+# DynamoDB Tables — Basado en el análisis de las Lambdas
 ##########################################################
+
+# Tabla para la Lambda 'torneos'
+resource "aws_dynamodb_table" "torneos_table" {
+  name         = "Torneos"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-torneos"
+    Environment = var.environment
+  }
+}
+
+# Tabla para las Lambdas 'ventas' y 'qr_generator'
 resource "aws_dynamodb_table" "ventas_table" {
   name         = "Ventas"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "venta_id"
+  hash_key     = "id" # Corregido de 'venta_id' a 'id' para coincidir con el código
 
   attribute {
-    name = "venta_id"
+    name = "id"
     type = "S"
   }
 
@@ -67,17 +86,77 @@ resource "aws_dynamodb_table" "ventas_table" {
   }
 }
 
+# Tabla para la Lambda 'notificaciones' (para bloqueo de enlaces)
+resource "aws_dynamodb_table" "transmisiones_table" {
+  name         = "Transmisiones"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-transmisiones"
+    Environment = var.environment
+  }
+}
+
 ##########################################################
-# IAM Role y Policy para Lambda
+# SNS Topic — Para la Lambda de notificaciones
+##########################################################
+resource "aws_sns_topic" "notifications_topic" {
+  name = "${var.project_name}-notifications-topic-${var.environment}"
+  tags = {
+    Name        = "${var.project_name}-notifications"
+    Environment = var.environment
+  }
+}
+
+##########################################################
+# AWS Cognito — Para autenticación de usuarios
+##########################################################
+resource "aws_cognito_user_pool" "torneos_user_pool" {
+  name                = "${var.project_name}-user-pool-${var.environment}"
+  username_attributes = ["email"]
+  password_policy {
+    minimum_length    = 8
+    require_lowercase = true
+    require_numbers   = true
+    require_symbols   = true
+    require_uppercase = true
+  }
+  schema {
+    name                = "email"
+    attribute_data_type = "String"
+    mutable             = false
+    required            = true
+  }
+  tags = {
+    Name        = "${var.project_name}-user-pool"
+    Environment = var.environment
+  }
+}
+
+resource "aws_cognito_user_pool_client" "app_client" {
+  name         = "${var.project_name}-app-client-${var.environment}"
+  user_pool_id = aws_cognito_user_pool.torneos_user_pool.id
+
+  generate_secret     = false
+  explicit_auth_flows = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
+}
+
+##########################################################
+# IAM Role y Policy para Lambda (Actualizado)
 ##########################################################
 resource "aws_iam_role" "lambda_exec_role" {
   name = "${var.project_name}-lambda-exec-role-${var.environment}"
-
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
+    Version = "2012-10-17",
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
       Principal = { Service = "lambda.amazonaws.com" }
     }]
   })
@@ -88,41 +167,46 @@ resource "aws_iam_role_policy" "lambda_policy" {
   role = aws_iam_role.lambda_exec_role.id
 
   policy = jsonencode({
-    Version = "2012-10-17"
+    Version = "2012-10-17",
     Statement = [
-      # Permisos de CloudWatch Logs
       {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
+        Effect   = "Allow",
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
         Resource = "arn:aws:logs:*:*:*"
       },
-      # Permisos para DynamoDB y S3
       {
-        Effect = "Allow"
+        Effect = "Allow",
         Action = [
           "dynamodb:PutItem",
           "dynamodb:GetItem",
-          "dynamodb:Scan",
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:ListBucket"
-        ]
+          "dynamodb:UpdateItem", # Necesario para qr_generator y notificaciones
+          "dynamodb:Scan"
+        ],
         Resource = [
+          aws_dynamodb_table.torneos_table.arn,
           aws_dynamodb_table.ventas_table.arn,
+          aws_dynamodb_table.transmisiones_table.arn
+        ]
+      },
+      {
+        Effect   = "Allow",
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
+        Resource = [
           "${aws_s3_bucket.qr_bucket.arn}/*",
           aws_s3_bucket.qr_bucket.arn
         ]
+      },
+      {
+        Effect   = "Allow",
+        Action   = "sns:Publish", # Permiso para que notificaciones envíe mensajes
+        Resource = aws_sns_topic.notifications_topic.arn
       }
     ]
   })
 }
 
 ##########################################################
-# Lambda Functions
+# Lambda Functions (con variables de entorno corregidas)
 ##########################################################
 locals {
   lambdas = {
@@ -136,18 +220,20 @@ locals {
 resource "aws_lambda_function" "lambda_functions" {
   for_each = local.lambdas
 
-  function_name = "${each.value}-${var.environment}"
-  handler       = "index.handler"
-  runtime       = "nodejs18.x"
-  role          = aws_iam_role.lambda_exec_role.arn
-  filename      = "${path.module}/lambda_placeholder.zip"
+  function_name    = "${each.value}-${var.environment}"
+  handler          = "src/index.handler"
+  runtime          = "nodejs18.x"
+  role             = aws_iam_role.lambda_exec_role.arn
+  filename         = "${path.module}/lambda_placeholder.zip"
   source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
 
   environment {
     variables = {
-      ENVIRONMENT = var.environment
-      BUCKET_NAME = aws_s3_bucket.qr_bucket.bucket
-      TABLE_NAME  = aws_dynamodb_table.ventas_table.name
+      ENVIRONMENT             = var.environment
+      BUCKET_NAME             = aws_s3_bucket.qr_bucket.bucket
+      TABLE_NAME              = each.key == "torneos" ? aws_dynamodb_table.torneos_table.name : aws_dynamodb_table.ventas_table.name
+      SNS_TOPIC_ARN           = aws_sns_topic.notifications_topic.arn
+      TRANSMISSION_TABLE_NAME = aws_dynamodb_table.transmisiones_table.name
     }
   }
 
@@ -158,14 +244,25 @@ resource "aws_lambda_function" "lambda_functions" {
 }
 
 ##########################################################
-# API Gateway HTTP
+# API Gateway con Integración de Cognito
 ##########################################################
 resource "aws_apigatewayv2_api" "api" {
   name          = "${var.project_name}-api"
   protocol_type = "HTTP"
 }
 
-# Integraciones con cada Lambda
+resource "aws_apigatewayv2_authorizer" "cognito_authorizer" {
+  api_id           = aws_apigatewayv2_api.api.id
+  authorizer_type  = "JWT"
+  identity_sources = ["$request.header.Authorization"]
+  name             = "${var.project_name}-cognito-authorizer"
+
+  jwt_configuration {
+    audience = [aws_cognito_user_pool_client.app_client.id]
+    issuer   = "https://${aws_cognito_user_pool.torneos_user_pool.endpoint}"
+  }
+}
+
 resource "aws_apigatewayv2_integration" "lambda_integration" {
   for_each = aws_lambda_function.lambda_functions
 
@@ -175,16 +272,18 @@ resource "aws_apigatewayv2_integration" "lambda_integration" {
   payload_format_version = "2.0"
 }
 
-# Rutas (una por Lambda)
 resource "aws_apigatewayv2_route" "lambda_route" {
   for_each = aws_lambda_function.lambda_functions
 
   api_id    = aws_apigatewayv2_api.api.id
   route_key = "POST /${each.key}"
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration[each.key].id}"
+
+  # Aplicar seguridad a todas las rutas
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_authorizer.id
 }
 
-# Permisos para que API Gateway invoque las Lambdas
 resource "aws_lambda_permission" "api_invoke" {
   for_each = aws_lambda_function.lambda_functions
 
@@ -195,7 +294,6 @@ resource "aws_lambda_permission" "api_invoke" {
   source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/*"
 }
 
-# Stage
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.api.id
   name        = "$default"
@@ -203,7 +301,7 @@ resource "aws_apigatewayv2_stage" "default" {
 }
 
 ##########################################################
-# Outputs
+# Outputs (con nuevos recursos añadidos)
 ##########################################################
 output "api_gateway_url" {
   description = "Endpoint base del API Gateway"
@@ -212,12 +310,7 @@ output "api_gateway_url" {
 
 output "lambda_endpoints" {
   description = "Rutas HTTP disponibles para probar en Postman"
-  value = {
-    torneos        = "${aws_apigatewayv2_stage.default.invoke_url}/torneos"
-    ventas         = "${aws_apigatewayv2_stage.default.invoke_url}/ventas"
-    qr_generator   = "${aws_apigatewayv2_stage.default.invoke_url}/qr_generator"
-    notificaciones = "${aws_apigatewayv2_stage.default.invoke_url}/notificaciones"
-  }
+  value = { for k, v in aws_apigatewayv2_route.lambda_route : k => "${aws_apigatewayv2_stage.default.invoke_url}/${k}" }
 }
 
 output "qr_bucket_name" {
@@ -225,7 +318,26 @@ output "qr_bucket_name" {
   value       = aws_s3_bucket.qr_bucket.bucket
 }
 
-output "dynamodb_table_name" {
-  description = "Nombre de la tabla DynamoDB creada"
-  value       = aws_dynamodb_table.ventas_table.name
+output "dynamodb_table_names" {
+  description = "Nombres de las tablas DynamoDB creadas"
+  value = {
+    torneos      = aws_dynamodb_table.torneos_table.name
+    ventas       = aws_dynamodb_table.ventas_table.name
+    transmisiones = aws_dynamodb_table.transmisiones_table.name
+  }
+}
+
+output "sns_topic_arn" {
+  description = "ARN del SNS Topic de notificaciones"
+  value       = aws_sns_topic.notifications_topic.arn
+}
+
+output "cognito_user_pool_id" {
+  description = "ID del User Pool de Cognito"
+  value       = aws_cognito_user_pool.torneos_user_pool.id
+}
+
+output "cognito_user_pool_client_id" {
+  description = "ID del Cliente del User Pool de Cognito"
+  value       = aws_cognito_user_pool_client.app_client.id
 }
