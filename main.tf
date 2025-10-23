@@ -103,6 +103,23 @@ resource "aws_dynamodb_table" "transmisiones_table" {
   }
 }
 
+# Tabla para almacenar perfiles de usuario y roles de aplicación
+resource "aws_dynamodb_table" "user_profiles_table" {
+  name         = "UserProfiles"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-user-profiles"
+    Environment = var.environment
+  }
+}
+
 ##########################################################
 # SNS Topic — Para la Lambda de notificaciones
 ##########################################################
@@ -180,7 +197,8 @@ resource "aws_iam_role_policy" "lambda_policy" {
         Resource = [
           aws_dynamodb_table.torneos_table.arn,
           aws_dynamodb_table.ventas_table.arn,
-          aws_dynamodb_table.transmisiones_table.arn
+          aws_dynamodb_table.transmisiones_table.arn,
+          aws_dynamodb_table.user_profiles_table.arn
         ]
       },
       {
@@ -198,6 +216,12 @@ resource "aws_iam_role_policy" "lambda_policy" {
         Effect = "Allow",
         Action = ["cognito-idp:SignUp", "cognito-idp:ConfirmSignUp", "cognito-idp:InitiateAuth", "cognito-idp:AdminConfirmSignUp"],
         Resource = aws_cognito_user_pool.torneos_user_pool.arn
+      },
+      # Permisos para enviar datos de trazabilidad a X-Ray
+      {
+        Effect = "Allow",
+        Action = ["xray:PutTraceSegments"],
+        Resource = ["*"]
       }
     ]
   })
@@ -207,7 +231,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
 # Lambda Functions (con variables de entorno corregidas)
 ##########################################################
 locals {
-  # Añadimos las nuevas lambdas de autenticación
+  # Añadimos las nuevas lambdas de autenticación y la nueva de Sub-Admin
   lambdas = {
     torneos        = "crear-torneo-lambda"
     ventas         = "ventas-lambda"
@@ -216,6 +240,7 @@ locals {
     signup         = "auth-signup-lambda"
     confirm        = "auth-confirm-lambda"
     login          = "auth-login-lambda"
+    sub_admin_updater = "sub-admin-updater-lambda" # <-- NUEVA LAMBDA AÑADIDA
   }
 }
 
@@ -227,7 +252,12 @@ resource "aws_lambda_function" "lambda_functions" {
   runtime          = "nodejs18.x"
   role             = aws_iam_role.lambda_exec_role.arn
   filename         = "${path.module}/lambda_placeholder.zip"
-  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
+  source_code_hash = filebase64sha254("${path.module}/lambda_placeholder.zip")
+
+  # HABILITACIÓN DE X-RAY TRACING
+  tracing_config {
+    mode = "Active"
+  }
 
   environment {
     variables = {
@@ -237,6 +267,7 @@ resource "aws_lambda_function" "lambda_functions" {
       SNS_TOPIC_ARN           = aws_sns_topic.notifications_topic.arn
       TRANSMISSION_TABLE_NAME = aws_dynamodb_table.transmisiones_table.name
       COGNITO_CLIENT_ID       = aws_cognito_user_pool_client.app_client.id
+      USER_PROFILES_TABLE     = aws_dynamodb_table.user_profiles_table.name
     }
   }
 
@@ -277,10 +308,11 @@ resource "aws_apigatewayv2_integration" "lambda_integration" {
 
 # Rutas PROTEGIDAS (requieren token)
 resource "aws_apigatewayv2_route" "protected_routes" {
-  for_each = toset(["torneos", "ventas", "qr_generator", "notificaciones"])
+  for_each = toset(["torneos", "ventas", "qr_generator", "notificaciones", "sub_admin_updater"]) # <-- RUTA 'sub_admin_updater' AÑADIDA
 
   api_id    = aws_apigatewayv2_api.api.id
-  route_key = "POST /${each.key}"
+  # Uso de operador ternario para definir la nueva ruta con PUT
+  route_key = each.key == "sub_admin_updater" ? "PUT /torneos/sub-admins" : "POST /${each.key}" 
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration[each.key].id}"
 
   authorization_type = "JWT"
@@ -323,8 +355,8 @@ output "api_gateway_url" {
 output "lambda_endpoints" {
   description = "Rutas HTTP disponibles para probar en Postman"
   value       = merge(
-    { for k, v in aws_apigatewayv2_route.protected_routes : k => "${aws_apigatewayv2_stage.default.invoke_url}/${k}" },
-    { for k, v in aws_apigatewayv2_route.public_routes : k => "${aws_apigatewayv2_stage.default.invoke_url}/${k}" }
+    { for k, v in aws_apigatewayv2_route.protected_routes : k => "${aws_apigatewayv2_stage.default.invoke_url}/${replace(replace(v.route_key, "POST /", ""), "PUT /", "")}" }, # Actualización para limpiar el verbo HTTP
+    { for k, v in aws_apigatewayv2_route.public_routes : k => "${aws_apigatewayv2_stage.default.invoke_url}/${replace(v.route_key, "POST /", "")}" }
   )
 }
 
@@ -336,9 +368,10 @@ output "qr_bucket_name" {
 output "dynamodb_table_names" {
   description = "Nombres de las tablas DynamoDB creadas"
   value = {
-    torneos      = aws_dynamodb_table.torneos_table.name
-    ventas       = aws_dynamodb_table.ventas_table.name
+    torneos       = aws_dynamodb_table.torneos_table.name
+    ventas        = aws_dynamodb_table.ventas_table.name
     transmisiones = aws_dynamodb_table.transmisiones_table.name
+    user_profiles = aws_dynamodb_table.user_profiles_table.name
   }
 }
 

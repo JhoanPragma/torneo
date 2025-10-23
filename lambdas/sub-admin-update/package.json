@@ -1,0 +1,9 @@
+{
+  "name": "sub-admin-updater-service",
+  "version": "1.0.0",
+  "description": "Lambda para gestionar la asignación de subadministradores a un torneo y aplicar el límite de 2.",
+  "main": "src/index.js",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.577.0"
+  }
+}
