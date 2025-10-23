@@ -32,7 +32,7 @@ exports.handler = async (event) => {
         const command = new InitiateAuthCommand(params);
         const response = await cognitoClient.send(command);
 
-        // Los tokens (ID Token y Access Token) son críticos para la autorización en API Gateway.
+    
         return {
             statusCode: 200,
             body: JSON.stringify({

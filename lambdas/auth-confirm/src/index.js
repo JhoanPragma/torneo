@@ -1,13 +1,13 @@
 const { CognitoIdentityProviderClient, ConfirmSignUpCommand } = require("@aws-sdk/client-cognito-identity-provider");
-const { DynamoDBClient, PutItemCommand } = require("@aws-sdk/client-dynamodb"); // <-- 1. Importar cliente DynamoDB
+const { DynamoDBClient, PutItemCommand } = require("@aws-sdk/client-dynamodb");
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const CLIENT_ID = process.env.COGNITO_CLIENT_ID;
-const USER_PROFILES_TABLE = process.env.USER_PROFILES_TABLE; // <-- 2. Nueva variable de entorno
+const USER_PROFILES_TABLE = process.env.USER_PROFILES_TABLE;
 const DEFAULT_ROLE = "PARTICIPANTE"; // Rol por defecto
 
 const cognitoClient = new CognitoIdentityProviderClient({ region: REGION });
-const dbClient = new DynamoDBClient({ region: REGION }); // <-- 3. Instanciar cliente DynamoDB
+const dbClient = new DynamoDBClient({ region: REGION });
 
 exports.handler = async (event) => {
     try {
@@ -43,7 +43,7 @@ exports.handler = async (event) => {
         };
 
         const putItemCommand = new PutItemCommand(putItemParams);
-        await dbClient.send(putItemCommand); // <-- Ejecutar el comando de inserción
+        await dbClient.send(putItemCommand);
 
         return {
             statusCode: 200,
