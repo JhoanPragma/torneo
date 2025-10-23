@@ -10,7 +10,7 @@ const USER_PROFILES_TABLE = process.env.USER_PROFILES_TABLE || 'UserProfiles'; /
 
 const client = new DynamoDBClient({ region: REGION });
 
-// Definición de límites basada en roles (requisito del PDF)
+// Definición de límites basada en roles
 const ROLE_LIMITS = {
     "ORGANIZADOR": 2, // Límite para organizadores
     "PARTICIPANTE": 1, // Límite para usuarios registrados generales
@@ -34,7 +34,7 @@ const checkCatalog = async (tableName, keyValue) => {
 };
 
 /**
- * NUEVA FUNCIÓN: Obtiene el rol del usuario de la tabla UserProfiles.
+ * Obtiene el rol del usuario de la tabla UserProfiles.
  */
 const getUserRole = async (userId) => {
     const params = {
@@ -78,7 +78,7 @@ exports.handler = async (event) => {
         const tipo_torneo = es_pago ? "pago" : "gratuito";
 
         // =========================================================
-        // 1. VALIDACIÓN DE CATÁLOGOS (Existente)
+        // 1. VALIDACIÓN DE CATÁLOGOS
         // =========================================================
         const categoryExists = await checkCatalog(CATEGORIAS_TABLE, categoria);
         if (!categoryExists) {
@@ -98,7 +98,7 @@ exports.handler = async (event) => {
 
 
         // =========================================================
-        // 2. VALIDACIÓN DE LÍMITES POR ROL (ACTUALIZADO CON ROL DINÁMICO)
+        // 2. VALIDACIÓN DE LÍMITES POR ROL
         // =========================================================
         if (tipo_torneo === "gratuito") {
             

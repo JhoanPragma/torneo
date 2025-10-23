@@ -36,7 +36,7 @@ exports.handler = async (event) => {
                 ":sub_admin_set": { SS: [sub_admin_id] }, 
                 ":max_count": { N: String(MAX_SUB_ADMINS) }
             },
-            // CONDICIÓN CRÍTICA: Solo permite la actualización si el conjunto
+            //  Solo permite la actualización si el conjunto
             // 'sub_admins' es nulo O si su tamaño es menor al límite (2).
             ConditionExpression: "attribute_not_exists(sub_admins) OR size(sub_admins) < :max_count",
             ReturnValues: "ALL_NEW"

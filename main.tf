@@ -308,7 +308,7 @@ resource "aws_lambda_function" "lambda_functions" {
   runtime          = "nodejs18.x"
   role             = aws_iam_role.lambda_exec_role.arn
   filename         = "${path.module}/lambda_placeholder.zip"
-  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip") # <-- CORRECCIÓN: Cambiado de filebase64sha254 a filebase64sha256
+  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip")
 
   # HABILITACIÓN DE X-RAY TRACING
   tracing_config {
