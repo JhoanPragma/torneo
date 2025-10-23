@@ -154,6 +154,23 @@ resource "aws_dynamodb_table" "tipos_juego_table" {
   }
 }
 
+# Tabla de Datos Maestros: Etapas de Venta (NUEVA: Para precios dinámicos)
+resource "aws_dynamodb_table" "sales_stages_table" {
+  name         = "EtapasVenta"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "torneoId" # PK para consultar las etapas de venta por torneo
+
+  attribute {
+    name = "torneoId"
+    type = "S"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-sales-stages"
+    Environment = var.environment
+  }
+}
+
 ##########################################################
 # SNS Topic — Para la Lambda de notificaciones
 ##########################################################
@@ -227,14 +244,16 @@ resource "aws_iam_role_policy" "lambda_policy" {
       },
       {
         Effect = "Allow",
-        Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"],
+        # Incluye PutItem, GetItem, UpdateItem, Scan (necesarios para aforo y etapas de venta)
+        Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"], 
         Resource = [
           aws_dynamodb_table.torneos_table.arn,
           aws_dynamodb_table.ventas_table.arn,
           aws_dynamodb_table.transmisiones_table.arn,
           aws_dynamodb_table.user_profiles_table.arn,
           aws_dynamodb_table.categorias_table.arn,
-          aws_dynamodb_table.tipos_juego_table.arn
+          aws_dynamodb_table.tipos_juego_table.arn,
+          aws_dynamodb_table.sales_stages_table.arn # <-- PERMISO AÑADIDO
         ]
       },
       {
@@ -277,7 +296,7 @@ locals {
     confirm           = "auth-confirm-lambda"
     login             = "auth-login-lambda"
     sub_admin_updater = "sub-admin-updater-lambda"
-    dashboard_query   = "dashboard-query-lambda" # <-- NUEVA LAMBDA AÑADIDA
+    dashboard_query   = "dashboard-query-lambda"
   }
 }
 
@@ -307,6 +326,7 @@ resource "aws_lambda_function" "lambda_functions" {
       USER_PROFILES_TABLE     = aws_dynamodb_table.user_profiles_table.name
       CATEGORIAS_TABLE        = aws_dynamodb_table.categorias_table.name,
       TIPOS_JUEGO_TABLE       = aws_dynamodb_table.tipos_juego_table.name
+      SALES_STAGES_TABLE      = aws_dynamodb_table.sales_stages_table.name # <-- VARIABLE AÑADIDA
     }
   }
 
@@ -347,7 +367,7 @@ resource "aws_apigatewayv2_integration" "lambda_integration" {
 
 # Rutas PROTEGIDAS (requieren token)
 resource "aws_apigatewayv2_route" "protected_routes" {
-  for_each = toset(["torneos", "ventas", "qr_generator", "notificaciones", "sub_admin_updater", "dashboard_query"]) # <-- RUTA 'dashboard_query' AÑADIDA
+  for_each = toset(["torneos", "ventas", "qr_generator", "notificaciones", "sub_admin_updater", "dashboard_query"])
 
   api_id    = aws_apigatewayv2_api.api.id
   
@@ -416,6 +436,7 @@ output "dynamodb_table_names" {
     user_profiles     = aws_dynamodb_table.user_profiles_table.name
     categorias        = aws_dynamodb_table.categorias_table.name,
     tipos_juego       = aws_dynamodb_table.tipos_juego_table.name
+    sales_stages      = aws_dynamodb_table.sales_stages_table.name # <-- OUTPUT AÑADIDO
   }
 }
 

@@ -1,36 +1,79 @@
-const { DynamoDBClient, PutItemCommand, ScanCommand } = require("@aws-sdk/client-dynamodb"); // <-- AÑADIDO: ScanCommand
+const { DynamoDBClient, PutItemCommand, ScanCommand, GetItemCommand } = require("@aws-sdk/client-dynamodb"); // <-- AÑADIDO: GetItemCommand
 const { v4: uuidv4 } = require('uuid');
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
-const TABLE_NAME = processs.env.TABLE_NAME || 'Torneos';
+const TABLE_NAME = process.env.TABLE_NAME || 'Torneos';
+// Nuevas variables de entorno para las tablas de catálogo
+const CATEGORIAS_TABLE = process.env.CATEGORIAS_TABLE || 'Categorias';
+const TIPOS_JUEGO_TABLE = process.env.TIPOS_JUEGO_TABLE || 'TiposJuego'; 
+
 const client = new DynamoDBClient({ region: REGION });
 
 const MAX_FREE_TOURNAMENTS = 2; // Límite máximo de torneos gratuitos
 
 /**
+ * Función de soporte para verificar si un código existe en una tabla de catálogo.
+ */
+const checkCatalog = async (tableName, keyValue) => {
+    const params = {
+        TableName: tableName,
+        Key: {
+            "codigo": { S: keyValue }
+        },
+        // Solo necesitamos saber si el ítem existe
+        ProjectionExpression: "codigo" 
+    };
+    const command = new GetItemCommand(params);
+    const data = await client.send(command);
+    return !!data.Item;
+};
+
+
+/**
  * Handler de la función Lambda para la creación de torneos.
- * Valida el límite de torneos gratuitos por organizador,
- * asigna la categoría y el tipo (gratuito/pago),
- * y guarda la información en DynamoDB.
+ * 1. Valida catálogos (Categoría y Tipo de Juego).
+ * 2. Valida el límite de torneos gratuitos (2 por organizador).
+ * 3. Crea el torneo.
  */
 exports.handler = async (event) => {
     try {
         const body = JSON.parse(event.body);
-        const { nombre, descripcion, fecha_inicio, fecha_fin, organizador_id, categoria, es_pago } = body;
+        // Se asume que 'tipo_juego' debe venir en el body para la validación de catálogo
+        const { nombre, descripcion, fecha_inicio, fecha_fin, organizador_id, categoria, tipo_juego, es_pago } = body; 
 
         // Validaciones de entrada
-        if (!nombre || !organizador_id || !categoria) {
+        if (!nombre || !organizador_id || !categoria || !tipo_juego) {
             return {
                 statusCode: 400,
-                body: JSON.stringify({ message: "Nombre, organizador_id y categoría son obligatorios." })
+                body: JSON.stringify({ message: "Nombre, organizador_id, categoria y tipo_juego son obligatorios." })
             };
         }
 
         const torneoId = uuidv4();
         const tipo_torneo = es_pago ? "pago" : "gratuito";
-        
+
         // =========================================================
-        // 1. VALIDACIÓN: Límite de 2 Torneos Gratuitos
+        // 1. VALIDACIÓN DE CATÁLOGOS (NUEVO REQUISITO)
+        // =========================================================
+        const categoryExists = await checkCatalog(CATEGORIAS_TABLE, categoria);
+        if (!categoryExists) {
+             return {
+                statusCode: 400,
+                body: JSON.stringify({ message: `La categoría '${categoria}' no es válida. Debe ser seleccionada del catálogo.` })
+            };
+        }
+        
+        const gameTypeExists = await checkCatalog(TIPOS_JUEGO_TABLE, tipo_juego);
+        if (!gameTypeExists) {
+             return {
+                statusCode: 400,
+                body: JSON.stringify({ message: `El tipo de juego '${tipo_juego}' no es válido. Debe ser seleccionado del catálogo.` })
+            };
+        }
+
+
+        // =========================================================
+        // 2. VALIDACIÓN: Límite de 2 Torneos Gratuitos (Existente)
         // =========================================================
         if (tipo_torneo === "gratuito") {
             const scanParams = {
@@ -61,7 +104,7 @@ exports.handler = async (event) => {
         }
         // =========================================================
         
-        // 2. Creación del Torneo
+        // 3. Creación del Torneo
         // Parámetros para DynamoDB
         const params = {
             TableName: TABLE_NAME,
@@ -73,6 +116,7 @@ exports.handler = async (event) => {
                 fecha_fin: { S: fecha_fin || "No especificado" },
                 organizador_id: { S: organizador_id },
                 categoria: { S: categoria },
+                tipo_juego: { S: tipo_juego },
                 tipo: { S: tipo_torneo },
                 participantes: { N: "0" },
                 audiencia: { N: "0" }
@@ -85,7 +129,7 @@ exports.handler = async (event) => {
         return {
             statusCode: 201,
             body: JSON.stringify({
-                message: "Torneo creado exitosamente.",
+                message: "Torneo creado exitosamente. Catálogos validados.",
                 torneo_id: torneoId,
                 tipo: tipo_torneo
             })
