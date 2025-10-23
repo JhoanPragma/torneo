@@ -253,7 +253,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
           aws_dynamodb_table.user_profiles_table.arn,
           aws_dynamodb_table.categorias_table.arn,
           aws_dynamodb_table.tipos_juego_table.arn,
-          aws_dynamodb_table.sales_stages_table.arn # <-- PERMISO AÑADIDO
+          aws_dynamodb_table.sales_stages_table.arn
         ]
       },
       {
@@ -308,7 +308,7 @@ resource "aws_lambda_function" "lambda_functions" {
   runtime          = "nodejs18.x"
   role             = aws_iam_role.lambda_exec_role.arn
   filename         = "${path.module}/lambda_placeholder.zip"
-  source_code_hash = filebase64sha254("${path.module}/lambda_placeholder.zip")
+  source_code_hash = filebase64sha256("${path.module}/lambda_placeholder.zip") # <-- CORRECCIÓN: Cambiado de filebase64sha254 a filebase64sha256
 
   # HABILITACIÓN DE X-RAY TRACING
   tracing_config {
@@ -326,7 +326,7 @@ resource "aws_lambda_function" "lambda_functions" {
       USER_PROFILES_TABLE     = aws_dynamodb_table.user_profiles_table.name
       CATEGORIAS_TABLE        = aws_dynamodb_table.categorias_table.name,
       TIPOS_JUEGO_TABLE       = aws_dynamodb_table.tipos_juego_table.name
-      SALES_STAGES_TABLE      = aws_dynamodb_table.sales_stages_table.name # <-- VARIABLE AÑADIDA
+      SALES_STAGES_TABLE      = aws_dynamodb_table.sales_stages_table.name
     }
   }
 
@@ -436,7 +436,7 @@ output "dynamodb_table_names" {
     user_profiles     = aws_dynamodb_table.user_profiles_table.name
     categorias        = aws_dynamodb_table.categorias_table.name,
     tipos_juego       = aws_dynamodb_table.tipos_juego_table.name
-    sales_stages      = aws_dynamodb_table.sales_stages_table.name # <-- OUTPUT AÑADIDO
+    sales_stages      = aws_dynamodb_table.sales_stages_table.name
   }
 }
 
