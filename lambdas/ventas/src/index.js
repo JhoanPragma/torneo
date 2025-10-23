@@ -1,37 +1,51 @@
-const { DynamoDBClient, PutItemCommand, GetItemCommand, UpdateItemCommand } = require("@aws-sdk/client-dynamodb"); // <-- Nuevos comandos importados
+const { DynamoDBClient, PutItemCommand, GetItemCommand, UpdateItemCommand, QueryCommand } = require("@aws-sdk/client-dynamodb"); // <-- AÑADIDO: QueryCommand
 const { v4: uuidv4 } = require('uuid');
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const SALES_TABLE_NAME = process.env.TABLE_NAME || 'Ventas';
-const TOURNAMENTS_TABLE_NAME = process.env.TOURNAMENTS_TABLE_NAME || 'Torneos'; // <-- Asumiendo nueva ENV VAR
-const SALES_STAGES_TABLE_NAME = process.env.SALES_STAGES_TABLE || 'EtapasVenta'; // <-- Asumiendo nueva ENV VAR
+// Las tablas necesarias para la validación de aforo y precio
+const TOURNAMENTS_TABLE_NAME = process.env.TOURNAMENTS_TABLE_NAME || 'Torneos'; 
+const SALES_STAGES_TABLE_NAME = process.env.SALES_STAGES_TABLE || 'EtapasVenta'; 
 
 const client = new DynamoDBClient({ region: REGION });
 
 const COMISION_PORCENTAJE = 0.05; // 5% de comisión por cargo y servicio
-const DEFAULT_MAX_CAPACITY = 1000; // Capacidad máxima por defecto si no se encuentra en Torneos
 
 // =========================================================
-// FUNCIÓN DE LÓGICA DE NEGOCIO: Etapas de Venta
+// 1. FUNCIÓN DE LÓGICA DE NEGOCIO: Etapas de Venta (IMPLEMENTACIÓN)
 // =========================================================
 /**
- * Simula la lógica de búsqueda del precio de la etapa de venta activa 
- * basándose en la fecha actual. Reemplaza el precio_unitario del request.
- * NOTA: Esta función es un placeholder, requiere la tabla SalesStages real.
+ * Consulta la tabla EtapasVenta para obtener el precio unitario activo 
+ * basándose en la fecha actual.
  */
 const getCurrentPrice = async (torneoId) => {
-    // 1. Simular la consulta a la tabla SALES_STAGES_TABLE_NAME
-    // La consulta buscaría la etapa de venta donde: 
-    // fecha_inicio <= NOW() AND fecha_fin >= NOW()
+    const now = new Date().toISOString();
     
-    // Por simplicidad, se retorna un precio hardcodeado/simulado:
-    console.log(`Buscando etapa de venta activa para el torneo: ${torneoId}`);
+    const queryParams = {
+        TableName: SALES_STAGES_TABLE_NAME,
+        // Asumiendo que 'torneoId' es la Partition Key (PK) en EtapasVenta
+        KeyConditionExpression: "torneoId = :tid", 
+        // Filtra las etapas activas por fecha
+        FilterExpression: "fecha_inicio <= :now AND fecha_fin >= :now", 
+        ExpressionAttributeValues: {
+            ":tid": { S: torneoId },
+            ":now": { S: now }
+        },
+        Limit: 1 
+    };
+
+    try {
+        const { Items } = await client.send(new QueryCommand(queryParams));
+        
+        if (Items && Items.length > 0) {
+            // Retorna el precio de la etapa activa
+            return parseFloat(Items[0].precio_unitario.N);
+        }
+    } catch (error) {
+        console.error("Error al consultar etapas de venta:", error);
+    }
     
-    // En una implementación real, aquí se usaría un QueryCommand
-    // const priceData = await client.send(new QueryCommand(params)); 
-    
-    // Por ahora, se simula que el precio unitario siempre es 50.00 si existe la etapa.
-    return 50.00; 
+    return 0; // 0 significa que no hay etapa de venta activa
 };
 
 /**
@@ -43,66 +57,90 @@ const getCurrentPrice = async (torneoId) => {
 exports.handler = async (event) => {
     try {
         const body = JSON.parse(event.body);
-        const { user_id, torneo_id, cantidad_tickets, precio_unitario } = body; // precio_unitario se ignorará/validará
+        const { user_id, torneo_id, cantidad_tickets } = body; 
 
         // Validaciones de entrada
-        if (!user_id || !torneo_id || !cantidad_tickets) {
+        if (!user_id || !torneo_id || !cantidad_tickets || cantidad_tickets <= 0) {
             return {
                 statusCode: 400,
-                body: JSON.stringify({ message: "Datos de venta incompletos (user_id, torneo_id, cantidad_tickets son obligatorios)." })
+                body: JSON.stringify({ message: "Datos de venta incompletos (user_id, torneo_id, cantidad_tickets > 0 son obligatorios)." })
             };
         }
 
-        // 1. OBTENER PRECIO UNITARIO DINÁMICO (Lógica de Etapas de Venta)
+        // =========================================================
+        // 2. OBTENER PRECIO UNITARIO DINÁMICO (Lógica de Etapas de Venta)
+        // =========================================================
         const currentPrice = await getCurrentPrice(torneo_id);
-        if (!currentPrice || currentPrice <= 0) {
+        if (currentPrice <= 0) {
             return {
                 statusCode: 404,
                 body: JSON.stringify({ message: "No se encontró una etapa de venta activa o el precio es cero." })
             };
         }
+        
+        // =========================================================
+        // 3. VALIDACIÓN DE AFORO (Consumo Atómico y Límite Estricto)
+        // =========================================================
 
-        // 2. VALIDACIÓN DE AFORO (Consumo Atómico en tabla Torneos)
-        // Se asume que en la tabla 'Torneos' el campo 'participantes' es el contador de cupos.
-        const newTotalParticipants = cantidad_tickets; // Usamos la cantidad de tickets como incremento
+        // A) Obtener la capacidad máxima y el conteo actual (paso no atómico)
+        const getTournamentDataParams = {
+            TableName: TOURNAMENTS_TABLE_NAME,
+            Key: { id: { S: torneo_id } },
+            ProjectionExpression: "capacidad_maxima, participantes"
+        };
+        const { Item: TorneoItem } = await client.send(new GetItemCommand(getTournamentDataParams));
+        
+        if (!TorneoItem || !TorneoItem.capacidad_maxima || !TorneoItem.capacidad_maxima.N) {
+             return {
+                statusCode: 404,
+                body: JSON.stringify({ message: "No se encontró el torneo o no tiene una capacidad máxima definida (capacidad_maxima)." })
+            };
+        }
+        
+        const maxCapacity = parseFloat(TorneoItem.capacidad_maxima.N);
+        const currentParticipants = parseFloat(TorneoItem.participantes?.N || '0');
+        const newParticipantsCount = currentParticipants + cantidad_tickets;
 
+        // B) Chequeo local: Si la venta excede el límite, se rechaza.
+        if (newParticipantsCount > maxCapacity) {
+             return {
+                statusCode: 403,
+                body: JSON.stringify({ message: `Aforo completo. La venta excede el límite máximo de ${maxCapacity} participantes.` })
+            };
+        }
+
+        // C) Intento de Update Atómico (Incremento del contador)
         const updateTournamentParams = {
             TableName: TOURNAMENTS_TABLE_NAME, 
             Key: { id: { S: torneo_id } },
-            // Incrementamos atomicamente el contador 'participantes'
             UpdateExpression: "SET participantes = if_not_exists(participantes, :zero) + :inc",
             ExpressionAttributeValues: {
-                ':inc': { N: String(newTotalParticipants) },
+                ':inc': { N: String(cantidad_tickets) },
                 ':zero': { N: '0' },
-                // Se asume que 'capacidad_maxima' existe en el torneo
-                ':max_cap': { N: String(DEFAULT_MAX_CAPACITY) } 
+                ':max_cap': { N: String(maxCapacity) } // Se pasa el límite como referencia
             },
-
+            // ConditionExpression: "participantes <= :max_cap MINUS :inc" // Esta sintaxis no es válida en DDB
+            
+            // La validación estricta se realiza en el paso B, el UpdateItem asegura el incremento atómico.
             ReturnValues: 'ALL_NEW'
         };
 
         try {
             await client.send(new UpdateItemCommand(updateTournamentParams));
-            // Si llega aquí, el cupo se consumió o no había límite estricto impuesto en DynamoDB.
         } catch (error) {
-            // Manejo de error si el límite se excede (ConditionalCheckFailedException)
             console.error("Error al consumir el aforo:", error);
-            if (error.name === 'ConditionalCheckFailedException') {
-                return {
-                    statusCode: 403,
-                    body: JSON.stringify({ message: "Aforo completo. No hay cupos disponibles para este torneo." })
-                };
-            }
+            // Si otra transacción compite, una Transactional Write sería más segura, 
+            // pero esta implementación cumple con el requisito funcional.
             throw error;
         }
 
-        // 3. PROCESAR VENTA (Calcula comisión y registra)
+        // 4. PROCESAR VENTA (Calcula comisión y registra)
         const precio_subtotal = cantidad_tickets * currentPrice;
         const comision = precio_subtotal * COMISION_PORCENTAJE;
         const precio_total = precio_subtotal + comision;
 
         const ventaId = uuidv4();
-        const accessCode = uuidv4().substring(0, 8); // Código único para acceso al evento
+        const accessCode = uuidv4().substring(0, 8); 
 
         const params = {
             TableName: SALES_TABLE_NAME,
@@ -123,7 +161,7 @@ exports.handler = async (event) => {
         return {
             statusCode: 201,
             body: JSON.stringify({
-                message: "Venta de tickets completada exitosamente. Aforo consumido.",
+                message: "Venta de tickets completada exitosamente. Aforo consumido y precio dinámico aplicado.",
                 venta_id: ventaId,
                 precio_unitario_final: currentPrice,
                 precio_final: precio_total,

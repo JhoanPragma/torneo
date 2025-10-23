@@ -1,15 +1,21 @@
-const { DynamoDBClient, PutItemCommand, ScanCommand, GetItemCommand } = require("@aws-sdk/client-dynamodb"); // <-- AÑADIDO: GetItemCommand
+const { DynamoDBClient, PutItemCommand, ScanCommand, GetItemCommand } = require("@aws-sdk/client-dynamodb");
 const { v4: uuidv4 } = require('uuid');
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const TABLE_NAME = process.env.TABLE_NAME || 'Torneos';
-// Nuevas variables de entorno para las tablas de catálogo
+// Variables de entorno para las tablas de catálogo y perfiles
 const CATEGORIAS_TABLE = process.env.CATEGORIAS_TABLE || 'Categorias';
 const TIPOS_JUEGO_TABLE = process.env.TIPOS_JUEGO_TABLE || 'TiposJuego'; 
+const USER_PROFILES_TABLE = process.env.USER_PROFILES_TABLE || 'UserProfiles'; // Tabla de perfiles
 
 const client = new DynamoDBClient({ region: REGION });
 
-const MAX_FREE_TOURNAMENTS = 2; // Límite máximo de torneos gratuitos
+// Definición de límites basada en roles (requisito del PDF)
+const ROLE_LIMITS = {
+    "ORGANIZADOR": 2, // Límite para organizadores
+    "PARTICIPANTE": 1, // Límite para usuarios registrados generales
+    "DEFAULT": 1 
+};
 
 /**
  * Función de soporte para verificar si un código existe en una tabla de catálogo.
@@ -20,7 +26,6 @@ const checkCatalog = async (tableName, keyValue) => {
         Key: {
             "codigo": { S: keyValue }
         },
-        // Solo necesitamos saber si el ítem existe
         ProjectionExpression: "codigo" 
     };
     const command = new GetItemCommand(params);
@@ -28,17 +33,37 @@ const checkCatalog = async (tableName, keyValue) => {
     return !!data.Item;
 };
 
+/**
+ * NUEVA FUNCIÓN: Obtiene el rol del usuario de la tabla UserProfiles.
+ */
+const getUserRole = async (userId) => {
+    const params = {
+        TableName: USER_PROFILES_TABLE,
+        Key: {
+            "id": { S: userId } // El organizador_id es el ID de usuario (email)
+        },
+        ProjectionExpression: "role"
+    };
+    const command = new GetItemCommand(params);
+    const data = await client.send(command);
+    
+    if (data.Item && data.Item.role && data.Item.role.S) {
+        return data.Item.role.S;
+    }
+    // Si no se encuentra, retorna el rol por defecto
+    return "PARTICIPANTE"; 
+};
+
 
 /**
  * Handler de la función Lambda para la creación de torneos.
- * 1. Valida catálogos (Categoría y Tipo de Juego).
- * 2. Valida el límite de torneos gratuitos (2 por organizador).
+ * 1. Valida catálogos.
+ * 2. Valida el límite de torneos gratuitos (dinámico por rol).
  * 3. Crea el torneo.
  */
 exports.handler = async (event) => {
     try {
         const body = JSON.parse(event.body);
-        // Se asume que 'tipo_juego' debe venir en el body para la validación de catálogo
         const { nombre, descripcion, fecha_inicio, fecha_fin, organizador_id, categoria, tipo_juego, es_pago } = body; 
 
         // Validaciones de entrada
@@ -53,7 +78,7 @@ exports.handler = async (event) => {
         const tipo_torneo = es_pago ? "pago" : "gratuito";
 
         // =========================================================
-        // 1. VALIDACIÓN DE CATÁLOGOS (NUEVO REQUISITO)
+        // 1. VALIDACIÓN DE CATÁLOGOS (Existente)
         // =========================================================
         const categoryExists = await checkCatalog(CATEGORIAS_TABLE, categoria);
         if (!categoryExists) {
@@ -73,18 +98,20 @@ exports.handler = async (event) => {
 
 
         // =========================================================
-        // 2. VALIDACIÓN: Límite de 2 Torneos Gratuitos (Existente)
+        // 2. VALIDACIÓN DE LÍMITES POR ROL (ACTUALIZADO CON ROL DINÁMICO)
         // =========================================================
         if (tipo_torneo === "gratuito") {
+            
+            const userRole = await getUserRole(organizador_id);
+            const maxLimit = ROLE_LIMITS[userRole] || ROLE_LIMITS["DEFAULT"];
+
             const scanParams = {
                 TableName: TABLE_NAME,
-                // Usamos FilterExpression para buscar por organizador y tipo
                 FilterExpression: "organizador_id = :org_id AND tipo = :tipo_t",
                 ExpressionAttributeValues: {
                     ":org_id": { S: organizador_id },
                     ":tipo_t": { S: "gratuito" }
                 },
-                // Pedimos solo el Count, sin traer todos los Item (optimización de lectura)
                 Select: "COUNT" 
             };
             
@@ -93,11 +120,11 @@ exports.handler = async (event) => {
             
             const existingFreeTournaments = data.Count || 0;
 
-            if (existingFreeTournaments >= MAX_FREE_TOURNAMENTS) {
+            if (existingFreeTournaments >= maxLimit) {
                 return {
                     statusCode: 403,
                     body: JSON.stringify({ 
-                        message: `Límite alcanzado. El organizador (${organizador_id}) ya ha creado el máximo de ${MAX_FREE_TOURNAMENTS} torneos gratuitos permitidos.` 
+                        message: `Límite alcanzado para el rol ${userRole}. Ya ha creado el máximo de ${maxLimit} torneos gratuitos permitidos.` 
                     })
                 };
             }
