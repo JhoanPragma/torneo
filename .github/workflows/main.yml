@@ -37,7 +37,7 @@ jobs:
       - name: Terraform Apply
         env:
           TF_LOG: INFO
-        # Aplicamos Terraform. Esto creará la nueva tabla DynamoDB, la nueva Lambda (vacía) y la nueva ruta API.
+        # Aplicamos Terraform. Esto creará todas las nuevas tablas DynamoDB, Lambdas y rutas API.
         run: terraform apply -auto-approve -var="aws_region=${{ env.AWS_REGION }}"
 
       # ✅ Placeholder ZIP para las Lambdas
@@ -76,9 +76,10 @@ jobs:
             path: lambdas/auth-confirm
           - name: auth-login-lambda
             path: lambdas/auth-login
-          # NUEVA LAMBDA AÑADIDA
           - name: sub-admin-updater-lambda 
             path: lambdas/sub-admin-updater
+          - name: dashboard-query-lambda  # <-- NUEVA LAMBDA AÑADIDA
+            path: lambdas/dashboard-query # <-- RUTA DEL NUEVO SERVICIO
 
     steps:
       - name: Checkout Code

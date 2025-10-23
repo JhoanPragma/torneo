@@ -120,6 +120,40 @@ resource "aws_dynamodb_table" "user_profiles_table" {
   }
 }
 
+# Tabla de Datos Maestros: Categorías de Torneos
+resource "aws_dynamodb_table" "categorias_table" {
+  name         = "Categorias"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "codigo" # Usando 'codigo' como Hash Key para catálogos
+
+  attribute {
+    name = "codigo"
+    type = "S"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-categorias"
+    Environment = var.environment
+  }
+}
+
+# Tabla de Datos Maestros: Tipos de Videojuegos
+resource "aws_dynamodb_table" "tipos_juego_table" {
+  name         = "TiposJuego"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "codigo" # Usando 'codigo' como Hash Key para catálogos
+
+  attribute {
+    name = "codigo"
+    type = "S"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-tipos-juego"
+    Environment = var.environment
+  }
+}
+
 ##########################################################
 # SNS Topic — Para la Lambda de notificaciones
 ##########################################################
@@ -198,7 +232,9 @@ resource "aws_iam_role_policy" "lambda_policy" {
           aws_dynamodb_table.torneos_table.arn,
           aws_dynamodb_table.ventas_table.arn,
           aws_dynamodb_table.transmisiones_table.arn,
-          aws_dynamodb_table.user_profiles_table.arn
+          aws_dynamodb_table.user_profiles_table.arn,
+          aws_dynamodb_table.categorias_table.arn,
+          aws_dynamodb_table.tipos_juego_table.arn
         ]
       },
       {
@@ -233,14 +269,15 @@ resource "aws_iam_role_policy" "lambda_policy" {
 locals {
   # Añadimos las nuevas lambdas de autenticación y la nueva de Sub-Admin
   lambdas = {
-    torneos        = "crear-torneo-lambda"
-    ventas         = "ventas-lambda"
-    qr_generator   = "qr-generator-lambda"
-    notificaciones = "notificaciones-lambda"
-    signup         = "auth-signup-lambda"
-    confirm        = "auth-confirm-lambda"
-    login          = "auth-login-lambda"
-    sub_admin_updater = "sub-admin-updater-lambda" # <-- NUEVA LAMBDA AÑADIDA
+    torneos           = "crear-torneo-lambda"
+    ventas            = "ventas-lambda"
+    qr_generator      = "qr-generator-lambda"
+    notificaciones    = "notificaciones-lambda"
+    signup            = "auth-signup-lambda"
+    confirm           = "auth-confirm-lambda"
+    login             = "auth-login-lambda"
+    sub_admin_updater = "sub-admin-updater-lambda"
+    dashboard_query   = "dashboard-query-lambda" # <-- NUEVA LAMBDA AÑADIDA
   }
 }
 
@@ -268,6 +305,8 @@ resource "aws_lambda_function" "lambda_functions" {
       TRANSMISSION_TABLE_NAME = aws_dynamodb_table.transmisiones_table.name
       COGNITO_CLIENT_ID       = aws_cognito_user_pool_client.app_client.id
       USER_PROFILES_TABLE     = aws_dynamodb_table.user_profiles_table.name
+      CATEGORIAS_TABLE        = aws_dynamodb_table.categorias_table.name,
+      TIPOS_JUEGO_TABLE       = aws_dynamodb_table.tipos_juego_table.name
     }
   }
 
@@ -308,11 +347,14 @@ resource "aws_apigatewayv2_integration" "lambda_integration" {
 
 # Rutas PROTEGIDAS (requieren token)
 resource "aws_apigatewayv2_route" "protected_routes" {
-  for_each = toset(["torneos", "ventas", "qr_generator", "notificaciones", "sub_admin_updater"]) # <-- RUTA 'sub_admin_updater' AÑADIDA
+  for_each = toset(["torneos", "ventas", "qr_generator", "notificaciones", "sub_admin_updater", "dashboard_query"]) # <-- RUTA 'dashboard_query' AÑADIDA
 
   api_id    = aws_apigatewayv2_api.api.id
-  # Uso de operador ternario para definir la nueva ruta con PUT
-  route_key = each.key == "sub_admin_updater" ? "PUT /torneos/sub-admins" : "POST /${each.key}" 
+  
+  # Definición de rutas: POST para acciones, PUT para actualizaciones, GET para el dashboard
+  route_key = each.key == "sub_admin_updater" ? "PUT /torneos/sub-admins" : (
+    each.key == "dashboard_query" ? "GET /dashboard/torneos" : "POST /${each.key}"
+  )
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration[each.key].id}"
 
   authorization_type = "JWT"
@@ -355,7 +397,7 @@ output "api_gateway_url" {
 output "lambda_endpoints" {
   description = "Rutas HTTP disponibles para probar en Postman"
   value       = merge(
-    { for k, v in aws_apigatewayv2_route.protected_routes : k => "${aws_apigatewayv2_stage.default.invoke_url}/${replace(replace(v.route_key, "POST /", ""), "PUT /", "")}" }, # Actualización para limpiar el verbo HTTP
+    { for k, v in aws_apigatewayv2_route.protected_routes : k => "${aws_apigatewayv2_stage.default.invoke_url}/${replace(replace(v.route_key, "POST /", ""), "PUT /", "")}" },
     { for k, v in aws_apigatewayv2_route.public_routes : k => "${aws_apigatewayv2_stage.default.invoke_url}/${replace(v.route_key, "POST /", "")}" }
   )
 }
@@ -368,10 +410,12 @@ output "qr_bucket_name" {
 output "dynamodb_table_names" {
   description = "Nombres de las tablas DynamoDB creadas"
   value = {
-    torneos       = aws_dynamodb_table.torneos_table.name
-    ventas        = aws_dynamodb_table.ventas_table.name
-    transmisiones = aws_dynamodb_table.transmisiones_table.name
-    user_profiles = aws_dynamodb_table.user_profiles_table.name
+    torneos           = aws_dynamodb_table.torneos_table.name
+    ventas            = aws_dynamodb_table.ventas_table.name
+    transmisiones     = aws_dynamodb_table.transmisiones_table.name
+    user_profiles     = aws_dynamodb_table.user_profiles_table.name
+    categorias        = aws_dynamodb_table.categorias_table.name,
+    tipos_juego       = aws_dynamodb_table.tipos_juego_table.name
   }
 }
 
